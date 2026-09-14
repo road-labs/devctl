@@ -7,9 +7,12 @@ package main
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,10 +35,61 @@ import (
 // resolves against.
 const ManifestName = "devctl.yaml"
 
+// exampleManifest is a worked example of every feature, printed by -example. It
+// is embedded rather than fetched: a starting point has to work on a plane, and
+// it is the same file the tests run against, so it cannot rot.
+//
+//go:embed testdata/devctl.yaml
+var exampleManifest string
+
+// skillURL is the agent skill for writing a manifest, fetched rather than
+// embedded so it is whatever the project says today and not whatever the
+// binary was built with. `go install` leaves a user the binary and nothing
+// else, so printing is the only way either of these reaches them.
+const skillURL = "https://raw.githubusercontent.com/road-labs/devctl/main/skills/devctl-manifest/SKILL.md"
+
+// fetchSkill prints the skill. A failure says where to read it instead, since
+// a machine without network access is a fair reason to be reading a URL out of
+// an error message.
+func fetchSkill() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, skillURL, nil)
+	if err != nil {
+		return err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w\n\nread it at %s", err, skillURL)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s says %s\n\nread it at %s", skillURL, res.Status, skillURL)
+	}
+	_, err = io.Copy(os.Stdout, res.Body)
+	return err
+}
+
 func main() {
 	manifest := flag.String("manifest", "", "path to "+ManifestName+" (default: found by walking up from the working directory)")
 	check := flag.Bool("check", false, "validate the manifest, resolve and check dependencies, print the plan and exit")
+	example := flag.Bool("example", false, "print a worked example manifest and exit")
+	skill := flag.Bool("skill", false, "print the agent skill for writing a "+ManifestName+" and exit")
 	flag.Parse()
+
+	// Both print rather than write: what to do with them is the reader's
+	// business, and a tool that drops files into a repository uninvited is a
+	// tool people stop running.
+	switch {
+	case *example:
+		fmt.Print(exampleManifest)
+		return
+	case *skill:
+		if err := fetchSkill(); err != nil {
+			fail(err)
+		}
+		return
+	}
 
 	manifestPath, err := findManifest(*manifest)
 	if err != nil {

@@ -206,6 +206,34 @@ under those directories changes, after a short quiet period so a multi-file save
 restarts once. `↻` marks it; `w` turns it off per service. Leave the list empty
 for anything that reloads itself, such as a Next.js dev server.
 
+## Starting a manifest
+
+`go install` leaves you a binary and nothing else, so the two things that help
+you write a manifest are printed by the binary rather than shipped as files.
+
+```
+devctl -example
+```
+
+A worked example of every feature, which is also the manifest devctl's own
+tests run against, so it cannot drift from what the code does. Redirect it into
+`devctl.yaml` and cut it down, or read it beside your own.
+
+```
+devctl -skill
+```
+
+An agent skill for writing one: where in a repository the answers already are,
+starting with the Makefile and the Taskfile, then the handful of questions only
+a person can answer, then the mistakes worth naming. Fetched from the project,
+so it is whatever the project says today rather than whatever your binary was
+built with. Save it where your agent looks:
+
+```
+mkdir -p .claude/skills/devctl-manifest
+devctl -skill > .claude/skills/devctl-manifest/SKILL.md
+```
+
 ## Checking
 
 ```

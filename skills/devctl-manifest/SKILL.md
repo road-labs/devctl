@@ -9,9 +9,12 @@ description: >
 
 # Writing a devctl.yaml
 
-`docs/manifest.md` in the devctl repository is the reference: every key, every
-type, what each one means. **Read it for the schema.** This is the part it does
-not cover, which is how to find out what belongs in the file.
+Two things to have open beside this. `devctl -example` prints a worked example
+of every feature, and
+[docs/manifest.md](https://github.com/road-labs/devctl/blob/main/docs/manifest.md)
+is the reference: every key, every type, what each one means. **Read the
+reference for the schema.** This is the part it does not cover, which is how to
+find out what belongs in the file.
 
 Almost nobody gets stuck on the YAML. They get stuck because a manifest has to
 state things the repository never wrote down in one place, and a few things only

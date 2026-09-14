@@ -1,9 +1,11 @@
-# The manifest the tests run against, and a worked example of every feature:
-# dependencies the machine provides, dependencies devctl forwards, services with
-# several listeners, pinned ports, watched directories and one-shot tasks.
+# A worked example of every feature a devctl.yaml has: dependencies the machine
+# provides, dependencies devctl forwards, services with several listeners,
+# pinned ports, watched directories and one-shot tasks. `devctl -example` prints
+# this file.
 #
-# It describes an imaginary shop so the tests assert on something stable, rather
-# than on whichever services a particular repository happens to have this week.
+# It is also the manifest devctl's own tests run against, so it cannot rot. It
+# describes an imaginary shop rather than any real repository, so the tests
+# assert on something stable and the example stays readable to everyone.
 
 x-shared:
   # A value two places need. YAML anchors keep it stated once.
