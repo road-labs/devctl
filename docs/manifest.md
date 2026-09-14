@@ -156,13 +156,13 @@ appends to its own file.
 ```yaml
 logs:
   dir: .devlogs
-  max_size: 10MB
+  max_size: 2MB
 ```
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `dir` | string | Relative to the repository root, so it can be gitignored. Created if missing. |
-| `max_size` | string | Optional. `10MB`, `512KB`, `2GB`, or a plain byte count. |
+| `max_size` | string | Optional. `2MB`, `512KB`, `1GB`, or a plain byte count. |
 
 One `<name>.log` per dependency, service and task, opened for append, so a
 restart continues the same file and a crash can be read after the panel has
@@ -178,6 +178,11 @@ to roll over.
 A `max_size` that cannot be read is an error at load rather than a silent zero,
 because a log that was meant to be capped and is not is a disk that fills up
 overnight.
+
+Pick it against the whole directory, not one file: the cap applies per row, and
+a rotated generation doubles it. A repository with a dozen services at `2MB`
+settles under 50MB, which is already several thousand lines per service and far
+more than anyone reads to diagnose a crash.
 
 ## References
 

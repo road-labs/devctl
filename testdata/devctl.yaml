@@ -13,7 +13,7 @@ x-shared:
 # when it is already over the cap at start.
 logs:
   dir: .devlogs
-  max_size: 10MB
+  max_size: 2MB
 
 dependencies:
   # Provided by the machine. Its address comes from the environment or .env,
