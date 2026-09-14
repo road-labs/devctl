@@ -104,3 +104,14 @@ func TestStoppingForgetsTheLastProbe(t *testing.T) {
 	m.stopProcess(r)
 	require.Empty(t, r.portsOpen, "a stopped row holds no reading from before it stopped")
 }
+
+// The keys are laid out from their own content. They were sized by a number
+// picked in advance, and the longest of them, <pgup/dn> band above / below, did
+// not fit it and was cut.
+func TestHeaderKeysAreNotTruncated(t *testing.T) {
+	for _, width := range []int{100, 120, 160, 200} {
+		out := model(t, width, 50).header(width)
+		require.Contains(t, out, "band above / below", "at width %d", width)
+		require.Contains(t, out, "start / run / forward", "at width %d", width)
+	}
+}

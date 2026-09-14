@@ -227,23 +227,34 @@ func (m Model) header(width int) string {
 		identity = append(identity, field("tasks", fmt.Sprintf("%d", tasks)))
 	}
 
-	key := func(k, what string) string {
-		return styleKey.Render(pad("<"+k+">", 6)) + styleMuted.Render(what)
+	// A column of keys. The chip is padded to the widest key in ITS OWN column,
+	// so a long one like <pgup/dn> widens that column rather than running into
+	// its own label.
+	keyCol := func(items ...[2]string) []string {
+		chip := 0
+		for _, it := range items {
+			chip = max(chip, len("<"+it[0]+">"))
+		}
+		out := make([]string, len(items))
+		for i, it := range items {
+			out[i] = styleKey.Render(pad("<"+it[0]+">", chip+1)) + " " + styleMuted.Render(it[1])
+		}
+		return out
 	}
-	keysLeft := []string{
-		key("s", "start / run / forward"),
-		key("x", "stop"),
-		key("r", "restart"),
-		key("w", "auto-restart on/off"),
-	}
-	keysRight := []string{
-		key("d", "describe"),
-		key("l", "logs, this row"),
-		key("L", "logs, everything"),
-		key("j/k", "move"),
-		key("pgup/dn", "band above / below"),
-		key("q", "quit"),
-	}
+	keysLeft := keyCol(
+		[2]string{"s", "start / run / forward"},
+		[2]string{"x", "stop"},
+		[2]string{"r", "restart"},
+		[2]string{"w", "auto-restart on/off"},
+	)
+	keysRight := keyCol(
+		[2]string{"d", "describe"},
+		[2]string{"l", "logs, this row"},
+		[2]string{"L", "logs, everything"},
+		[2]string{"j/k", "move"},
+		[2]string{"pgup/dn", "band above / below"},
+		[2]string{"q", "quit"},
+	)
 	legend := []string{
 		styleGood.Render("●") + styleMuted.Render(" listening"),
 		styleMuted.Render("○ closed"),
@@ -258,17 +269,22 @@ func (m Model) header(width int) string {
 		}
 		return strings.Join(out, "\n")
 	}
-	// The identity column takes what it needs, the keys take a fixed pair of
-	// columns, and the legend gets the rest or is dropped on a narrow terminal.
-	// Each width carries its own right-hand gutter, so widening a label never
-	// runs it into the next column.
-	const keysLeftW, keysRightW, legendMin = 30, 26, 34
-	idW := 3
-	for _, l := range identity {
-		idW = max(idW, lipgloss.Width(l)+3)
+	// Every column is as wide as its own content plus a gutter, rather than a
+	// number picked in advance: a label that grows widens its column instead of
+	// being cut, which is what happened to "band above / below". The legend then
+	// takes whatever is left, and drops entirely on a terminal too narrow to
+	// hold it.
+	const gap, legendMin = 3, 34
+	widest := func(lines []string) int {
+		w := 0
+		for _, l := range lines {
+			w = max(w, lipgloss.Width(l))
+		}
+		return w + gap
 	}
-	blocks := []string{col(identity, idW), col(keysLeft, keysLeftW), col(keysRight, keysRightW)}
-	if rest := width - idW - keysLeftW - keysRightW; rest >= legendMin {
+	idW, leftW, rightW := widest(identity), widest(keysLeft), widest(keysRight)
+	blocks := []string{col(identity, idW), col(keysLeft, leftW), col(keysRight, rightW)}
+	if rest := width - idW - leftW - rightW; rest >= legendMin {
 		blocks = append(blocks, col(legend, rest))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, blocks...) + "\n\n"
