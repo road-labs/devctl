@@ -23,7 +23,10 @@ type Table map[string]map[string]int
 // {{ identity.grpc }}.
 type Values map[string]string
 
-// Expander resolves both kinds of reference.
+// Expander resolves both kinds of reference, which together are how a manifest
+// avoids stating an address twice: a service says where it listens once, and
+// everything that has to reach it says {{ service.port }} instead of a number.
+// See Model.envFor for what that buys.
 type Expander struct {
 	Ports  Table
 	Values Values

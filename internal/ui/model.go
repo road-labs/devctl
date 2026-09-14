@@ -491,10 +491,27 @@ func (m Model) nextGroup(step int) int {
 	return first
 }
 
-// envFor is the environment a row's process is given: its own listeners under
-// the names it reads them by, then its declared env with every reference
-// resolved. Describe shows exactly this, which is why start does not build it
-// inline any more.
+// envFor is the environment a row's process is given, and it is where devctl's
+// whole wiring model lands. Two sources, in this order:
+//
+//  1. The service's own listeners. `listen` maps a port NAME to the variable
+//     the process reads for that listener, so the process is told where to bind
+//     rather than choosing. devctl has already allocated the number by now.
+//  2. The service's declared `env`, with every {{ reference }} resolved: another
+//     service's port becomes localhost:<port>, a machine-provided dependency
+//     becomes its address from .env, a forwarded one becomes its local tunnel.
+//
+// The point of doing it this way is that a port is written down once, in the
+// manifest, and everything else is derived. devctl allocates at start, so a
+// default that something else on the machine is holding is quietly replaced by
+// a free one; every consumer of that port reads the new number through the same
+// table, in the same pass, without anyone editing anything. That is why a
+// developer's .env holds only what the machine provides and no ports at all,
+// and why two services can never disagree about where a third one is.
+//
+// Describe renders exactly this map, which is why start no longer builds it
+// inline: a panel that showed its own guess at the environment would be worth
+// less than nothing on the day the two drifted apart.
 func (m Model) envFor(r *row) (map[string]string, error) {
 	env := map[string]string{}
 	for name, listen := range r.cfg.Listen {

@@ -126,8 +126,11 @@ func (m Model) describeBody() string {
 		}
 	}
 
-	// Shown even when it cannot be built: a reference that does not resolve is
-	// exactly why this row will not start, and hiding the section hides that.
+	// The wired environment, which is the thing a manifest is really for: every
+	// address here was derived from the port table rather than typed, so this
+	// section is where a reader finds out what a service was actually told. See
+	// Model.envFor. Shown even when it cannot be built, because a reference that
+	// does not resolve is exactly why this row will not start.
 	env, err := m.envFor(r)
 	switch {
 	case err != nil:
