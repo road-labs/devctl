@@ -51,6 +51,9 @@ type row struct {
 
 	proc      *proc.Process
 	portsOpen map[int]bool
+	// starts counts how many times this row's process has been launched, so
+	// the table can say how many of those were restarts.
+	starts int
 
 	// Auto-restart: on for services with a watch list until toggled off.
 	autoRestart bool
@@ -59,20 +62,20 @@ type row struct {
 
 // Model is the Bubble Tea model.
 type Model struct {
-	root     string
-	expand   ports.Expander
-	rows     []*row
-	byName   map[string]*row
-	cursor   int
-	showLogs bool
-	width    int
-	height   int
-	message  string
+	root    string
+	expand  ports.Expander
+	rows    []*row
+	byName  map[string]*row
+	cursor  int
+	width   int
+	height  int
+	message string
 
 	// The full-screen log view: every process's output merged in the order
 	// it arrived, or one process's, scrollable, following the tail until
 	// scrolled away from it.
 	logView   bool
+	describe  bool
 	logFilter string // row name, or "" for every row
 	follow    bool
 	viewport  viewport.Model
@@ -81,7 +84,7 @@ type Model struct {
 // New builds the model from the manifest, the allocated port table and the
 // resolved dependency addresses.
 func New(root string, file *config.File, table ports.Table, values ports.Values, warnings []string) Model {
-	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, byName: map[string]*row{}, showLogs: true, follow: true}
+	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, byName: map[string]*row{}, follow: true}
 	m.viewport = viewport.New(80, 20)
 	// Scrolling keys only; f, b and space are ours.
 	m.viewport.KeyMap = viewport.KeyMap{
@@ -230,8 +233,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.viewport.Width = msg.Width
 		m.viewport.Height = max(msg.Height-5, 3)
-		if m.logView {
+		switch {
+		case m.logView:
 			m.refreshLogs()
+		case m.describe:
+			m.viewport.SetContent(m.describeBody())
 		}
 		return m, nil
 	case tickMsg:
@@ -264,12 +270,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message = fmt.Sprintf("%s: %s changed, restarted", r.cfg.Name, relPath(m.root, msg.path))
 		return m, tea.Batch(cmd, awaitChange(r))
 	case tea.KeyMsg:
-		if m.logView {
+		switch {
+		case m.logView:
 			return m.handleLogKey(msg)
+		case m.describe:
+			return m.handleDescribeKey(msg)
 		}
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleDescribeKey drives the describe view: scrolling, and the ways out.
+func (m Model) handleDescribeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "d":
+		m.describe = false
+		return m, nil
+	case "ctrl+c":
+		m.stopAll()
+		return m, tea.Quit
+	}
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
 }
 
 // handleLogKey drives the full-screen log view.
@@ -385,6 +409,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
 		}
+	case "pgdown", "ctrl+d":
+		m.cursor = m.nextGroup(1)
+	case "pgup", "ctrl+u":
+		m.cursor = m.nextGroup(-1)
 	case "s", "enter":
 		if sel.dep != nil && !sel.dep.Forwarded() {
 			m.message = fmt.Sprintf("%s is provided by the machine: set %s in .env", sel.cfg.Name, sel.dep.Env)
@@ -404,29 +432,93 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.start(sel, map[string]bool{})
 	case "w":
 		return m, m.toggleWatch(sel)
-	case "a":
-		var cmds []tea.Cmd
-		for _, r := range m.rows {
-			if r.cfg.Autostart {
-				cmds = append(cmds, m.start(r, map[string]bool{}))
-			}
-		}
-		return m, tea.Batch(cmds...)
-	case "l":
-		m.showLogs = !m.showLogs
-	case "L":
-		// Full-screen logs, opened on the selected row when it has output.
-		m.logFilter = ""
-		if sel.proc != nil {
-			m.logFilter = sel.cfg.Name
-		}
-		m.follow = true
-		m.logView = true
+	case "d":
+		// Everything devctl knows about this row, and what it is wired to.
+		m.describe = true
 		m.viewport.Width = max(m.width, 40)
-		m.viewport.Height = max(m.height-5, 3)
-		m.refreshLogs()
+		m.viewport.Height = max(m.height-4, 3)
+		m.viewport.SetContent(m.describeBody())
+		m.viewport.GotoTop()
+	case "l":
+		// This row's own output, whether or not it has any yet: opening an empty
+		// log is an answer too.
+		m.openLogs(sel.cfg.Name)
+	case "L":
+		// Everything, merged in the order it arrived.
+		m.openLogs("")
 	}
 	return m, nil
+}
+
+// group is which of the three bands a row sits in. The single table keeps them
+// in this order, with a rule drawn where one ends.
+func (r *row) group() int {
+	switch {
+	case r.dep != nil:
+		return 0
+	case !r.task:
+		return 1
+	}
+	return 2
+}
+
+// nextGroup is the first row of the band above or below the cursor's, which is
+// what page up and page down do here: a list this short does not need paging,
+// but jumping between dependencies, services and tasks is worth a key.
+func (m Model) nextGroup(step int) int {
+	here := m.rows[m.cursor].group()
+	if step > 0 {
+		for i := m.cursor + 1; i < len(m.rows); i++ {
+			if m.rows[i].group() != here {
+				return i
+			}
+		}
+		return len(m.rows) - 1
+	}
+	// Up: the first row of the band before this one, which means finding its
+	// start rather than its end.
+	first := m.cursor
+	for first > 0 && m.rows[first-1].group() == here {
+		first--
+	}
+	if first == 0 {
+		return 0
+	}
+	prev := m.rows[first-1].group()
+	for first > 0 && m.rows[first-1].group() == prev {
+		first--
+	}
+	return first
+}
+
+// envFor is the environment a row's process is given: its own listeners under
+// the names it reads them by, then its declared env with every reference
+// resolved. Describe shows exactly this, which is why start does not build it
+// inline any more.
+func (m Model) envFor(r *row) (map[string]string, error) {
+	env := map[string]string{}
+	for name, listen := range r.cfg.Listen {
+		env[listen.Env] = ports.Listen(m.expand.Ports[r.cfg.Name][name], listen.Format)
+	}
+	for k, v := range r.cfg.Env {
+		expanded, err := m.expand.Expand(v)
+		if err != nil {
+			return nil, err
+		}
+		env[k] = expanded
+	}
+	return env, nil
+}
+
+// openLogs switches to the full-screen log view, showing one row's output or
+// every row's.
+func (m *Model) openLogs(filter string) {
+	m.logFilter = filter
+	m.follow = true
+	m.logView = true
+	m.viewport.Width = max(m.width, 40)
+	m.viewport.Height = max(m.height-5, 3)
+	m.refreshLogs()
 }
 
 // start launches a row, starting the services it depends on first. It refuses
@@ -458,20 +550,10 @@ func (m *Model) start(r *row, visiting map[string]bool) tea.Cmd {
 		}
 	}
 
-	// Listeners get ":<port>" or the bare number; references in env and cmd
-	// resolve through the port table and dependency addresses, so no address
-	// is written anywhere but the manifest and .env.
-	env := map[string]string{}
-	for name, listen := range r.cfg.Listen {
-		env[listen.Env] = ports.Listen(m.expand.Ports[r.cfg.Name][name], listen.Format)
-	}
-	for k, v := range r.cfg.Env {
-		expanded, err := m.expand.Expand(v)
-		if err != nil {
-			m.message = fmt.Sprintf("%s: %v", r.cfg.Name, err)
-			return tea.Batch(cmds...)
-		}
-		env[k] = expanded
+	env, err := m.envFor(r)
+	if err != nil {
+		m.message = fmt.Sprintf("%s: %v", r.cfg.Name, err)
+		return tea.Batch(cmds...)
 	}
 	command, err := m.expand.Expand(r.cfg.Cmd)
 	if err != nil {
@@ -488,6 +570,7 @@ func (m *Model) start(r *row, visiting map[string]bool) tea.Cmd {
 		m.message = fmt.Sprintf("%s: %v", r.cfg.Name, err)
 		return tea.Batch(cmds...)
 	}
+	r.starts++
 	r.proc = p
 	switch {
 	case r.task:
@@ -586,6 +669,30 @@ func (r *row) running() bool {
 	}
 	state, _ := r.proc.State()
 	return state == proc.StateRunning
+}
+
+// restarts is how many times the process came back after its first start,
+// whether by hand, by a watched file changing, or after a crash.
+func (r *row) restarts() int {
+	if r.starts == 0 {
+		return 0
+	}
+	return r.starts - 1
+}
+
+// watchCell says whether the service restarts itself when a watched file
+// changes. Blank where nothing is watched: a column of "off" on rows that were
+// never going to restart says nothing. Autostart is not here, because it is a
+// manifest fact that has already happened by the time anyone reads the table.
+func (r *row) watchCell() string {
+	switch {
+	case len(r.cfg.Watch) == 0:
+		return ""
+	case r.autoRestart:
+		return styleGood.Render("on")
+	default:
+		return styleMuted.Render("off")
+	}
 }
 
 // status is the state shown in the table, with the uptime while something
@@ -710,196 +817,4 @@ func relPath(root, path string) string {
 		return rel
 	}
 	return path
-}
-
-var (
-	styleTitle  = lipgloss.NewStyle().Bold(true)
-	styleMuted  = lipgloss.NewStyle().Faint(true)
-	styleGood   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styleWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	styleBad    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	styleCursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styleHeader = lipgloss.NewStyle().Faint(true).Underline(true)
-)
-
-const statusW = 20
-
-// View renders the dependencies, the service table, the tasks, the log pane
-// and the key help, or the full-screen log view.
-func (m Model) View() string {
-	if m.logView {
-		return m.logViewString()
-	}
-	width := m.width
-	if width <= 0 {
-		width = 120
-	}
-	clip := func(s string, room int) string {
-		if room > 10 && len(s) > room {
-			return s[:room-1] + "…"
-		}
-		return s
-	}
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("devctl") + styleMuted.Render("  platform local running  ·  "+m.root) + "\n\n")
-
-	nameW := 8
-	for _, r := range m.rows {
-		nameW = max(nameW, len(r.cfg.Name))
-	}
-	line := func(cursor, name, status, desc string) string {
-		return fmt.Sprintf("%s %-*s  %-*s  %s", cursor, nameW, name, statusW, status, desc)
-	}
-	room := width - (nameW + statusW + 6)
-	lines := 0
-	section := ""
-	for i, r := range m.rows {
-		// Section headers as the row kind changes: dependencies, services, tasks.
-		want := "service"
-		switch {
-		case r.dep != nil:
-			want = "dependency"
-		case r.task:
-			want = "task"
-		}
-		if want != section {
-			if section != "" {
-				b.WriteString("\n")
-				lines++
-			}
-			section = want
-			switch section {
-			case "dependency":
-				b.WriteString(styleHeader.Render(line(" ", "DEPENDENCY", "STATUS", "ADDRESS")) + "\n")
-			case "service":
-				b.WriteString(styleHeader.Render(line(" ", "SERVICE", "STATUS", "DESCRIPTION")) + "\n")
-			default:
-				b.WriteString(styleHeader.Render(line(" ", "TASK", "STATUS", "DESCRIPTION")) + "\n")
-			}
-			lines++
-		}
-
-		cursor := " "
-		if i == m.cursor {
-			cursor = styleCursor.Render("▶")
-		}
-		label, style := r.status()
-		status := style.Render(fmt.Sprintf("%-*s", statusW, label))
-		switch {
-		case r.dep != nil:
-			kind := r.dep.Kind
-			if r.dep.Forwarded() {
-				kind = "forward"
-			}
-			address := deps.Redact(r.address)
-			if address == "" {
-				address = "-"
-			}
-			head := address + "  " + kind
-			desc := head + "  " + styleMuted.Render(clip(r.cfg.Description, room-len(head)-2))
-			b.WriteString(line(cursor, r.cfg.Name, status, desc) + "\n")
-		default:
-			desc := clip(r.cfg.Description, room)
-			if len(r.cfg.Watch) > 0 {
-				marker := "↻ "
-				if !r.autoRestart {
-					marker = "↻ off "
-				}
-				desc = styleMuted.Render(marker) + styleMuted.Render(clip(r.cfg.Description, room-len(marker)))
-			} else {
-				desc = styleMuted.Render(desc)
-			}
-			b.WriteString(line(cursor, r.cfg.Name, status, desc) + "\n")
-		}
-		lines++
-
-		// One line per listener: a service can expose several servers with
-		// different jobs, so each shows its own kind, number and state.
-		for _, declared := range r.cfg.Ports {
-			number := m.expand.Ports[r.cfg.Name][declared.Name]
-			dot := styleMuted.Render("○")
-			if r.portsOpen[number] {
-				dot = styleGood.Render("●")
-			}
-			moved := " "
-			if number != declared.Number {
-				moved = styleWarn.Render("*")
-			}
-			fmt.Fprintf(&b, "      %s %-8s %-4s %5d%s  %s\n", dot, declared.Name, styleMuted.Render(declared.Kind), number, moved, styleMuted.Render(clip(declared.Description, width-34)))
-			lines++
-		}
-	}
-
-	if m.showLogs {
-		sel := m.rows[m.cursor]
-		b.WriteString("\n")
-		title := "logs · " + sel.cfg.Name
-		switch {
-		case sel.task:
-			title = "output · " + sel.cfg.Name
-		case sel.dep != nil:
-			title = sel.cfg.Name + " · " + sel.cfg.Description
-		}
-		if sel.proc != nil {
-			title += fmt.Sprintf(" · pid %d", sel.proc.PID())
-		}
-		b.WriteString(styleHeader.Render(title) + "\n")
-		avail := m.height - lines - 9
-		if avail < 5 {
-			avail = 5
-		}
-		switch {
-		case sel.proc != nil:
-			for _, l := range sel.proc.Tail(avail) {
-				if len(l) > width-1 {
-					l = l[:width-2] + "…"
-				}
-				b.WriteString(l + "\n")
-			}
-		case sel.dep != nil && !sel.dep.Forwarded():
-			b.WriteString(styleMuted.Render(fmt.Sprintf("provided by the machine; %s from .env or the environment", sel.dep.Env)) + "\n")
-		case sel.dep != nil:
-			forward, err := m.expand.Expand(sel.dep.Forward.Cmd)
-			if err != nil {
-				forward = sel.dep.Forward.Cmd
-			}
-			b.WriteString(styleMuted.Render("not forwarded; s runs: "+forward) + "\n")
-		default:
-			b.WriteString(styleMuted.Render("not started") + "\n")
-		}
-	}
-
-	b.WriteString("\n" + styleMuted.Render("s start/run/forward  x stop  r restart  w auto-restart on/off  a autostart set  l log pane  L full logs  j/k move  q quit    ● listening  ○ closed  * moved  ↻ watching"))
-	if m.message != "" {
-		b.WriteString("\n" + m.message)
-	}
-	return b.String()
-}
-
-// logViewString is the full-screen log view: a title with whether the tail is
-// being followed, a tab bar of sources with the current one highlighted, the
-// scrollable content, and the keys.
-func (m Model) logViewString() string {
-	state := "following"
-	if !m.follow {
-		state = fmt.Sprintf("scrolled, %d%%", int(m.viewport.ScrollPercent()*100))
-	}
-	tabs := make([]string, 0, len(m.rows)+1)
-	for _, name := range m.logSources() {
-		label := name
-		if label == "" {
-			label = "all"
-		}
-		if name == m.logFilter {
-			tabs = append(tabs, styleCursor.Render("["+label+"]"))
-		} else {
-			tabs = append(tabs, styleMuted.Render(" "+label+" "))
-		}
-	}
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("logs") + styleMuted.Render("  ·  "+state) + "\n")
-	b.WriteString(strings.Join(tabs, " ") + "\n")
-	b.WriteString(m.viewport.View() + "\n")
-	b.WriteString(styleMuted.Render("←/→ or tab service  f follow  ↑↓ pgup pgdn scroll  g/G top/bottom  esc or L back  q quit"))
-	return b.String()
 }
