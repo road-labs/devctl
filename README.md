@@ -296,11 +296,15 @@ tests run against, so it cannot drift from what the code does. Redirect it into
 devctl -skill
 ```
 
-An agent skill for writing one: where in a repository the answers already are,
-starting with the Makefile and the Taskfile, then the handful of questions only
-a person can answer, then the mistakes worth naming. Fetched from the project,
-so it is whatever the project says today rather than whatever your binary was
-built with. Save it where your agent looks:
+An agent skill for writing one, with the full schema reference and a worked
+example appended, so it is one document with nothing left to go and find. The
+skill itself covers where in a repository the answers already are, starting
+with the Makefile and the Taskfile, then the handful of questions only a person
+can answer, then the mistakes worth naming.
+
+The skill and the reference are fetched, so they are whatever the project says
+today rather than whatever your binary was built with. Save it where your agent
+looks:
 
 ```
 mkdir -p .claude/skills/devctl-manifest

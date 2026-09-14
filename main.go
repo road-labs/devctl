@@ -42,32 +42,59 @@ const ManifestName = "devctl.yaml"
 //go:embed testdata/devctl.yaml
 var exampleManifest string
 
-// skillURL is the agent skill for writing a manifest, fetched rather than
-// embedded so it is whatever the project says today and not whatever the
-// binary was built with. `go install` leaves a user the binary and nothing
-// else, so printing is the only way either of these reaches them.
-const skillURL = "https://raw.githubusercontent.com/road-labs/devctl/main/skills/devctl-manifest/SKILL.md"
+// The skill and the schema reference are fetched, so they are whatever the
+// project says today rather than whatever the binary was built with. Both go
+// out under -skill, joined, because an agent handed a document with a link in
+// it does not follow the link: it goes and greps the module cache instead, and
+// then guesses. One command, one document, nothing left to find.
+const (
+	skillURL     = "https://raw.githubusercontent.com/road-labs/devctl/main/skills/devctl-manifest/SKILL.md"
+	referenceURL = "https://raw.githubusercontent.com/road-labs/devctl/main/docs/manifest.md"
+)
 
-// fetchSkill prints the skill. A failure says where to read it instead, since
-// a machine without network access is a fair reason to be reading a URL out of
-// an error message.
-func fetchSkill() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, skillURL, nil)
+// fetchSkill prints the skill, the reference and a worked example as one
+// document. A failure says where to read it instead, since a machine without
+// network access is a fair reason to be reading a URL out of an error message.
+func fetchSkill(out io.Writer) error {
+	skill, err := fetchText(skillURL)
 	if err != nil {
 		return err
 	}
+	reference, err := fetchText(referenceURL)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(out, skill)
+	fmt.Fprint(out, "\n---\n\n# Reference\n\n")
+	fmt.Fprint(out, strings.TrimPrefix(reference, "# devctl.yaml\n"))
+	// The example comes from the binary rather than the network: it is the file
+	// this build's tests run against, so it describes what this devctl does.
+	fmt.Fprint(out, "\n---\n\n# A worked example\n\n```yaml\n")
+	fmt.Fprint(out, exampleManifest)
+	fmt.Fprint(out, "```\n")
+	return nil
+}
+
+func fetchText(url string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w\n\nread it at %s", err, skillURL)
+		return "", fmt.Errorf("%w\n\nread it at %s", err, url)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s says %s\n\nread it at %s", skillURL, res.Status, skillURL)
+		return "", fmt.Errorf("%s says %s", url, res.Status)
 	}
-	_, err = io.Copy(os.Stdout, res.Body)
-	return err
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func main() {
@@ -85,7 +112,7 @@ func main() {
 		fmt.Print(exampleManifest)
 		return
 	case *skill:
-		if err := fetchSkill(); err != nil {
+		if err := fetchSkill(os.Stdout); err != nil {
 			fail(err)
 		}
 		return
