@@ -168,29 +168,20 @@ One `<name>.log` per dependency, service and task, opened for append, so a
 restart continues the same file and a crash can be read after the panel has
 moved on. `d` and the log view both print the path.
 
-A file that reaches `max_size` is **rotated**, not truncated: it moves to
-`<name>.log.1`, replacing any previous one, and a fresh file begins. The log
-that has grown past the limit is usually the one about to be read, and one
-generation of history costs a rename.
-
-The cap is enforced on every write, not when the process starts. devctl runs
-all day and a service started this morning is the same process this evening,
-so a start-time check would let one file grow without limit while appearing to
-be capped. **The directory is therefore bounded for as long as devctl runs**:
-two files per row, neither past the cap, which is the whole point of setting
-one.
-
-Anything following a file through a rotation needs `tail -F`, not `tail -f`:
-the name is reused, the inode is not.
+A file already over `max_size` when its process starts is **emptied**, and a new
+one begins. One check, at the one moment a development loop reaches often
+enough for it to matter: a panel and its services are started many times a day.
+The cost of that simplicity is that a single very long run can take a file past
+the cap; stopping and starting it brings it back.
 
 A `max_size` that cannot be read is an error at load rather than a silent zero,
 because a log that was meant to be capped and is not is a disk that fills up
 overnight.
 
-Pick it against the whole directory, not one file: the cap applies per row, and
-the kept generation doubles it. A repository with a dozen services at `2MB` is
-bounded at about 50MB, which is already several thousand lines per service and
-far more than anyone reads to diagnose a crash.
+Pick it against the whole directory, not one file: the cap applies per row. A
+repository with a dozen services at `2MB` settles around 25MB, which is already
+several thousand lines per service and far more than anyone reads to diagnose a
+crash.
 
 ## References
 

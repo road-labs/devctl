@@ -42,9 +42,8 @@ type Spec struct {
 	// is opened for append, so a restart continues the same file and the record
 	// outlives the panel.
 	LogFile string
-	// LogMaxSize bounds LogFile: when a write would take it past this many
-	// bytes the file moves to <name>.1 and a new one begins, so the pair is
-	// never more than twice this. Zero never rotates and grows without limit.
+	// LogMaxSize empties LogFile at start when it is already over this many
+	// bytes. Zero never empties it.
 	LogMaxSize int64
 }
 
@@ -59,8 +58,6 @@ type Process struct {
 	// logMu guards the file: two capture goroutines write to it.
 	logMu   sync.Mutex
 	logFile *os.File
-	logMax  int64
-	logSize int64
 
 	mu       sync.Mutex
 	state    State
@@ -91,7 +88,7 @@ func Start(spec Spec) (*Process, error) {
 	}
 	// Opened before the command, so a directory that cannot be written is an
 	// error the caller sees rather than output quietly going nowhere.
-	logFile, logSize, err := openLog(spec.LogFile)
+	logFile, err := openLog(spec.LogFile, spec.LogMaxSize)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +108,6 @@ func Start(spec Spec) (*Process, error) {
 		state:     StateRunning,
 		logPath:   spec.LogFile,
 		logFile:   logFile,
-		logMax:    spec.LogMaxSize,
-		logSize:   logSize,
 	}
 
 	var readers sync.WaitGroup
@@ -140,70 +135,44 @@ func Start(spec Spec) (*Process, error) {
 	return p, nil
 }
 
-// openLog prepares a service's log file: the directory, the handle, and how
-// much is already in it. The size matters because the cap is enforced on every
-// write, not at start: devctl runs all day, a service started this morning is
-// still the same process this evening, and a check that only ran at start would
-// let one file grow without limit while appearing to be capped.
-func openLog(path string) (*os.File, int64, error) {
+// openLog prepares a service's log file. The size check happens here and only
+// here: a file already over the cap is emptied and started again, which in a
+// development loop is often enough, since a panel and its services are started
+// many times a day. The cost of the simplicity is that one very long run can
+// take a file past the cap; stopping and starting it brings it back.
+func openLog(path string, maxSize int64) (*os.File, error) {
 	if path == "" {
-		return nil, 0, nil
+		return nil, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, 0, fmt.Errorf("log directory: %w", err)
+		return nil, fmt.Errorf("log directory: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if maxSize > 0 {
+		if info, err := os.Stat(path); err == nil && info.Size() > maxSize {
+			flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+		}
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
-		return nil, 0, fmt.Errorf("open log: %w", err)
+		return nil, fmt.Errorf("open log: %w", err)
 	}
-	info, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, 0, fmt.Errorf("stat log: %w", err)
-	}
-	return f, info.Size(), nil
+	return f, nil
 }
 
-// appendLog writes one line, rolling the file over first when it is full. A
-// row therefore occupies at most twice the cap on disk, for as long as devctl
-// runs, which is the point: a development log directory that keeps growing is
-// one somebody eventually has to remember to delete.
+// appendLog writes one line. A write that fails closes the file and lets the
+// run carry on: the ring still has the line, and a full disk should not take
+// the services down with it.
 func (p *Process) appendLog(line string) {
 	p.logMu.Lock()
 	defer p.logMu.Unlock()
 	if p.logFile == nil {
 		return
 	}
-	if p.logMax > 0 && p.logSize+int64(len(line))+1 > p.logMax {
-		p.roll()
-		if p.logFile == nil {
-			return
-		}
-	}
-	n, err := p.logFile.WriteString(line + "\n")
-	if err != nil {
-		// A log that cannot be written must not take the run down with it, and
-		// the ring still has the line.
+	if _, err := p.logFile.WriteString(line + "\n"); err != nil {
 		_ = p.logFile.Close()
 		p.logFile = nil
-		return
 	}
-	p.logSize += int64(n)
-}
-
-// roll moves the full file aside and begins a new one, keeping exactly one
-// generation. The caller holds logMu.
-func (p *Process) roll() {
-	_ = p.logFile.Close()
-	p.logFile = nil
-	if err := os.Rename(p.logPath, p.logPath+".1"); err != nil {
-		return
-	}
-	f, err := os.OpenFile(p.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return
-	}
-	p.logFile, p.logSize = f, 0
 }
 
 // LogPath is where this process's output is being appended, or "" when the
