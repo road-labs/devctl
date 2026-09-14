@@ -92,3 +92,15 @@ func TestDescribeShowsTheGraph(t *testing.T) {
 	require.Contains(t, out, "needed by")
 	require.Contains(t, out, "storefront", "the reverse edge, which the manifest never states")
 }
+
+// Restarting stopped but never started again: the probe's last reading said the
+// ports were open, start's preflight believed it, and refused the row its own
+// port back.
+func TestStoppingForgetsTheLastProbe(t *testing.T) {
+	m := model(t, 140, 50)
+	r := m.byName["catalogue"]
+	r.portsOpen[7200] = true
+
+	m.stopProcess(r)
+	require.Empty(t, r.portsOpen, "a stopped row holds no reading from before it stopped")
+}

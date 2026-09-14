@@ -267,7 +267,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stopProcess(r)
 		cmd := m.start(r, map[string]bool{})
-		m.message = fmt.Sprintf("%s: %s changed, restarted", r.cfg.Name, relPath(m.root, msg.path))
+		// Only claim a restart if one happened. Where start refused, its own
+		// message says why, and overwriting it here would leave a watched service
+		// down with the panel insisting it had just come back.
+		if r.proc != nil {
+			m.message = fmt.Sprintf("%s: %s changed, restarted", r.cfg.Name, relPath(m.root, msg.path))
+		}
 		return m, tea.Batch(cmd, awaitChange(r))
 	case tea.KeyMsg:
 		switch {
@@ -424,14 +429,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				sel.proc = nil
 			}
 		}
-		return m, m.start(sel, map[string]bool{})
+		// The command is taken first, on purpose. start has a pointer receiver and
+		// writes m.message; `return m, m.start(...)` lets the compiler copy m for
+		// the return before the call runs, and a refusal would never reach the
+		// status bar. Every mutating call on this path is written this way.
+		cmd := m.start(sel, map[string]bool{})
+		return m, cmd
 	case "x":
 		m.stop(sel)
 	case "r":
 		m.stopProcess(sel)
-		return m, m.start(sel, map[string]bool{})
+		cmd := m.start(sel, map[string]bool{})
+		return m, cmd
 	case "w":
-		return m, m.toggleWatch(sel)
+		cmd := m.toggleWatch(sel)
+		return m, cmd
 	case "d":
 		// Everything devctl knows about this row, and what it is wired to.
 		m.describe = true
@@ -612,13 +624,18 @@ func (m *Model) start(r *row, visiting map[string]bool) tea.Cmd {
 
 // stopProcess ends the process but keeps watching, for restarts.
 func (m *Model) stopProcess(r *row) {
-	if r.proc == nil {
-		return
+	if r.proc != nil {
+		if err := r.proc.Stop(stopTimeout); err != nil {
+			m.message = fmt.Sprintf("%s: %v", r.cfg.Name, err)
+		}
+		r.proc = nil
 	}
-	if err := r.proc.Stop(stopTimeout); err != nil {
-		m.message = fmt.Sprintf("%s: %v", r.cfg.Name, err)
-	}
-	r.proc = nil
+	// The probe runs twice a second, so whatever it last saw is from before the
+	// process exited. start's preflight reads exactly this map, and a restart
+	// would refuse over the row's own port, which it had just released. Clearing
+	// leaves the preflight to ask the operating system, and the next probe
+	// refills it.
+	clear(r.portsOpen)
 }
 
 // stop ends the process and the watcher: the user asked for it to be down.
