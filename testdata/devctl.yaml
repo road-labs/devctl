@@ -1,0 +1,83 @@
+# The manifest the tests run against, and a worked example of every feature:
+# dependencies the machine provides, dependencies devctl forwards, services with
+# several listeners, pinned ports, watched directories and one-shot tasks.
+#
+# It describes an imaginary shop so the tests assert on something stable, rather
+# than on whichever services a particular repository happens to have this week.
+
+x-shared:
+  # A value two places need. YAML anchors keep it stated once.
+  api_key: &api_key dev-key-0000
+
+dependencies:
+  # Provided by the machine. Its address comes from the environment or .env,
+  # under the name in `env`, and is checked before anything starts.
+  - name: db
+    description: Postgres holding every service's data
+    env: DATABASE_URL
+    example: postgres://localhost:5432/shop
+    kind: tcp
+
+  # Forwarded by devctl on demand. The local port is allocated like a service's,
+  # and the command states it once through a reference to itself.
+  - name: payments
+    description: The payments gateway, forwarded from staging
+    kind: tcp
+    port: 7100
+    forward: {cmd: "kubectl -n shop port-forward svc/payments {{ payments.port.number }}:8080"}
+
+services:
+  # Several listeners, one of them pinned. Anything reached by number from
+  # outside this repository has to be pinned; the rest may move when something
+  # else on the machine holds the default.
+  - name: catalogue
+    description: Product catalogue, the API everything else reads
+    depends_on: [db]
+    ports:
+      - {name: http, port: 7200, kind: http, fixed: true, description: public API, its URL is written down elsewhere}
+      - {name: grpc, port: 7201, kind: grpc, description: internal API, resolved through the port table}
+      - {name: metrics, port: 7202, kind: http, description: Prometheus metrics}
+    autostart: true
+    dir: services/catalogue
+    watch: [services/catalogue, libs]
+    cmd: go run ./cmd/catalogue
+    listen: {http: HTTP_ADDR, grpc: GRPC_ADDR}
+    env:
+      DATABASE_URL: "{{ db.address }}"
+      PAYMENTS_ADDR: "{{ payments.port }}"
+      API_KEY: *api_key
+
+  # One listener, and a program that wants a bare port number rather than an
+  # address to bind. Pinned because a browser is told to go there.
+  - name: storefront
+    description: The web front end
+    depends_on: [catalogue]
+    ports:
+      - {name: web, port: 7300, kind: http, fixed: true, description: http://localhost:7300}
+    autostart: true
+    dir: services/storefront
+    cmd: npm run dev
+    listen: {web: {env: PORT, format: number}}
+    env:
+      CATALOGUE_URL: "{{ catalogue.http.url }}"
+      CATALOGUE_GRPC: "{{ catalogue.grpc }}"
+
+  # No ports at all: a worker is a perfectly good service.
+  - name: mailer
+    description: Sends the emails the catalogue queues
+    depends_on: [db]
+    dir: services/mailer
+    cmd: go run ./cmd/mailer
+    env:
+      DATABASE_URL: "{{ db.address }}"
+
+tasks:
+  # Run on demand from the panel, not kept running.
+  - name: seed
+    description: Wipe the database and seed a shop to click around in
+    depends_on: [db]
+    dir: services/catalogue
+    cmd: go run ./cmd/seed
+    env:
+      DATABASE_URL: "{{ db.address }}"
+      API_KEY: *api_key

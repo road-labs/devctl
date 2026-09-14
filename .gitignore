@@ -1,0 +1,9 @@
+# devctl reads the repository's .env for dependency addresses; it is personal.
+.env
+
+# Build output
+/devctl
+
+# IDE
+.idea/
+.vscode/

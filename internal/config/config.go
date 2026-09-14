@@ -1,0 +1,268 @@
+// Package config loads development/devctl/services.yaml, the single source of
+// truth for what can run locally, on which ports, in which modes, what it
+// needs from the machine, and which one-shot tasks the panel offers.
+package config
+
+import (
+	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Listen is how one listener's port reaches the process.
+type Listen struct {
+	Env    string `yaml:"env"`
+	Format string `yaml:"format"` // addr (default): ":<port>"; number: "<port>"
+}
+
+// UnmarshalYAML accepts the short scalar form as well as the mapping.
+func (l *Listen) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*l = Listen{Env: node.Value, Format: "addr"}
+		return nil
+	}
+	type plain Listen
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*l = Listen(p)
+	if l.Format == "" {
+		l.Format = "addr"
+	}
+	return nil
+}
+
+// Port is one listener of a service. A service can expose several, for
+// example a management gRPC server and a separate authentication gRPC server,
+// so each carries what kind it is and what it serves.
+type Port struct {
+	Name        string `yaml:"name"`
+	Number      int    `yaml:"port"`
+	Kind        string `yaml:"kind"` // http or grpc
+	Description string `yaml:"description"`
+	// Fixed refuses to start rather than move this one listener to a free
+	// port. Use it only where something outside this process has the number
+	// written down: a URL persisted in a store, a redirect URI, IdP metadata.
+	// A port other services find through {{ svc.name }} is never fixed, since
+	// they are handed whatever it was given.
+	Fixed bool `yaml:"fixed"`
+}
+
+// Service is one row in the tool: one command on declared ports.
+type Service struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	// Ports are the service's listeners in declaration order, with their
+	// default numbers.
+	Ports []Port `yaml:"ports"`
+	// FixedPorts pins every one of the service's ports. Prefer `fixed` on the
+	// single port that needs it: pinning all of them refuses to start over a
+	// clash on a port nothing outside the process refers to.
+	FixedPorts bool `yaml:"fixed_ports"`
+	// DependsOn names services started first and dependencies that must be
+	// configured.
+	DependsOn []string `yaml:"depends_on"`
+	Autostart bool     `yaml:"autostart"`
+	// Dir is relative to the repository root; Cmd runs through sh -c.
+	Dir string `yaml:"dir"`
+	Cmd string `yaml:"cmd"`
+	// Listen maps a port name declared on the service to the environment
+	// variable this process reads for that listener. The plain form
+	// `{http: HTTP_ADDR}` passes ":<port>"; `{web: {env: PORT, format: number}}`
+	// passes the bare number, for programs such as Next.js that want only that.
+	Listen map[string]Listen `yaml:"listen"`
+	// Env is extra environment; values may reference ports as {{ svc.port }}
+	// and dependencies as {{ dep.address }} or {{ dep.port }}.
+	Env map[string]string `yaml:"env"`
+	// Watch lists directories, relative to the repository root, whose Go
+	// source changes restart the service. Empty means no auto-restart.
+	Watch []string `yaml:"watch"`
+}
+
+// Dependency is something outside this repository a run needs. It is either
+// provided by the machine, in which case Env names the variable holding its
+// address (read from the process environment or the repository's .env,
+// referenced as {{ name.address }}) and it is checked when devctl starts; or
+// forwarded by devctl, in which case Port is the local port and Forward the
+// command that opens the tunnel, started from the panel and referenced like
+// a service port: {{ name.port }}, {{ name.port.number }}, {{ name.port.url }}.
+// A forwarded dependency is optional by nature: nothing waits for the tunnel.
+// A machine-provided one is required unless marked optional, in which case
+// unconfigured it expands to "" and unreachable it only warns.
+type Dependency struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Env         string `yaml:"env"`
+	Example     string `yaml:"example"`
+	Kind        string `yaml:"kind"` // mongo (ping) or tcp (dial)
+	Optional    bool   `yaml:"optional"`
+	// Port and Forward describe a dependency devctl tunnels to.
+	Port    int      `yaml:"port"`
+	Forward *Forward `yaml:"forward"`
+}
+
+// Forward is the command that brings a forwarded dependency up, typically a
+// kubectl port-forward. Its cmd may reference {{ name.port.number }}.
+type Forward struct {
+	Dir string `yaml:"dir"`
+	Cmd string `yaml:"cmd"`
+}
+
+// Forwarded reports whether devctl, rather than the machine, provides it.
+func (d Dependency) Forwarded() bool { return d.Forward != nil }
+
+// Task is a one-shot command offered by the panel, such as seeding the
+// database. It runs to completion and shows its exit status.
+type Task struct {
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description"`
+	Dir         string            `yaml:"dir"`
+	Cmd         string            `yaml:"cmd"`
+	Env         map[string]string `yaml:"env"`
+	DependsOn   []string          `yaml:"depends_on"`
+}
+
+// Port returns the declared port with this name.
+func (s Service) Port(name string) (Port, bool) {
+	for _, p := range s.Ports {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Port{}, false
+}
+
+// File is the parsed services.yaml.
+type File struct {
+	Dependencies []Dependency `yaml:"dependencies"`
+	Services     []Service    `yaml:"services"`
+	Tasks        []Task       `yaml:"tasks"`
+}
+
+// Load reads and validates the manifest.
+func Load(path string) (*File, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var f File
+	if err := yaml.Unmarshal(raw, &f); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if err := f.validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &f, nil
+}
+
+func (f *File) validate() error {
+	if len(f.Services) == 0 {
+		return fmt.Errorf("no services defined")
+	}
+	// One namespace for everything the panel shows and depends_on can name.
+	seen := map[string]string{}
+	claim := func(name, what string) error {
+		if name == "" {
+			return fmt.Errorf("a %s has no name", what)
+		}
+		if prev, dup := seen[name]; dup {
+			return fmt.Errorf("%s %q is already the name of a %s", what, name, prev)
+		}
+		seen[name] = what
+		return nil
+	}
+
+	for i := range f.Dependencies {
+		d := &f.Dependencies[i]
+		if err := claim(d.Name, "dependency"); err != nil {
+			return err
+		}
+		if d.Kind == "" {
+			d.Kind = "tcp"
+		}
+		if d.Kind != "mongo" && d.Kind != "tcp" {
+			return fmt.Errorf("dependency %q has unknown kind %q (mongo or tcp)", d.Name, d.Kind)
+		}
+		switch {
+		case d.Forwarded() && d.Env != "":
+			return fmt.Errorf("dependency %q is either provided by the machine (env) or forwarded (port + forward), not both", d.Name)
+		case d.Forwarded():
+			d.Optional = true
+			if d.Forward.Cmd == "" {
+				return fmt.Errorf("dependency %q forward has no cmd", d.Name)
+			}
+			if d.Port <= 0 || d.Port > 65535 {
+				return fmt.Errorf("dependency %q is forwarded and needs a valid local port, got %d", d.Name, d.Port)
+			}
+		case d.Env == "":
+			return fmt.Errorf("dependency %q needs env (the variable holding its address) or port + forward", d.Name)
+		case d.Port != 0:
+			return fmt.Errorf("dependency %q has a port but no forward", d.Name)
+		}
+	}
+
+	for i := range f.Services {
+		s := &f.Services[i]
+		if err := claim(s.Name, "service"); err != nil {
+			return err
+		}
+		if s.Cmd == "" {
+			return fmt.Errorf("service %q has no cmd", s.Name)
+		}
+		portNames := map[string]bool{}
+		for _, port := range s.Ports {
+			if port.Name == "" {
+				return fmt.Errorf("service %q has a port without a name", s.Name)
+			}
+			if portNames[port.Name] {
+				return fmt.Errorf("service %q declares port %q twice", s.Name, port.Name)
+			}
+			portNames[port.Name] = true
+			if port.Number <= 0 || port.Number > 65535 {
+				return fmt.Errorf("service %q port %q has an invalid number %d", s.Name, port.Name, port.Number)
+			}
+			if port.Kind != "" && port.Kind != "http" && port.Kind != "grpc" {
+				return fmt.Errorf("service %q port %q has unknown kind %q (http or grpc)", s.Name, port.Name, port.Kind)
+			}
+		}
+		for name, listen := range s.Listen {
+			if !portNames[name] {
+				return fmt.Errorf("service %q listens on undeclared port %q", s.Name, name)
+			}
+			if listen.Env == "" {
+				return fmt.Errorf("service %q listen %q names no env variable", s.Name, name)
+			}
+			if listen.Format != "addr" && listen.Format != "number" {
+				return fmt.Errorf("service %q listen %q has unknown format %q (addr or number)", s.Name, name, listen.Format)
+			}
+		}
+	}
+
+	for i := range f.Tasks {
+		t := &f.Tasks[i]
+		if err := claim(t.Name, "task"); err != nil {
+			return err
+		}
+		if t.Cmd == "" {
+			return fmt.Errorf("task %q has no cmd", t.Name)
+		}
+	}
+
+	for _, s := range f.Services {
+		for _, dep := range s.DependsOn {
+			if what := seen[dep]; what != "service" && what != "dependency" {
+				return fmt.Errorf("service %q depends on unknown service or dependency %q", s.Name, dep)
+			}
+		}
+	}
+	for _, t := range f.Tasks {
+		for _, dep := range t.DependsOn {
+			if what := seen[dep]; what != "service" && what != "dependency" {
+				return fmt.Errorf("task %q depends on unknown service or dependency %q", t.Name, dep)
+			}
+		}
+	}
+	return nil
+}
