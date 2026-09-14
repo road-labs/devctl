@@ -17,6 +17,17 @@ logs:
   dir: .devlogs
   max_size: 2MB
 
+# Named subsets worth running on their own. What a profile lists are the roots;
+# what those need comes with them, so `devctl storefront-only` brings the
+# catalogue and the database up too without saying so.
+profiles:
+  - name: storefront-only
+    description: The web front end and what it reads
+    include: [storefront]
+  - name: everything-but-mail
+    description: The shop without the mailer
+    include: [storefront-only, seed]
+
 dependencies:
   # Provided by the machine. Its address comes from the environment or .env,
   # under the name in `env`, and is checked before anything starts.

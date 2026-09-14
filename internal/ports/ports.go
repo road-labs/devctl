@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -175,10 +174,6 @@ func PickFree() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// reference matches {{ service.port }}, {{ service.port.number }},
-// {{ service.port.url }} and {{ dependency.address }}.
-var reference = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)(?:\.(number|url))?\s*\}\}`)
-
 // Expand replaces every reference in s. A dependency value is substituted as
 // is. For a port, the bare form is a dial address, localhost:<port>; ".number"
 // is the bare port; ".url" is http://localhost:<port>.
@@ -190,8 +185,8 @@ func (e Expander) Expand(s string) (string, error) {
 		}
 		return ""
 	}
-	out := reference.ReplaceAllStringFunc(s, func(match string) string {
-		m := reference.FindStringSubmatch(match)
+	out := config.Reference.ReplaceAllStringFunc(s, func(match string) string {
+		m := config.Reference.FindStringSubmatch(match)
 		if value, ok := e.Values[m[1]+"."+m[2]]; ok {
 			if m[3] != "" {
 				return fail(fmt.Errorf("%s.%s has no .%s form, it is not a port", m[1], m[2], m[3]))

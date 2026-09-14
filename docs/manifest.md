@@ -147,6 +147,41 @@ output goes to the log view, ending in `done` or `failed (n)`.
 | `env` | map | Extra environment. May contain references. |
 | `depends_on` | list | Checked or started first. |
 
+## profiles
+
+Optional. A repository with thirty services rarely wants all thirty up, and the
+subset somebody works on is usually stable enough to name.
+
+```yaml
+profiles:
+  - name: fraud
+    description: The fraud console and what it reads
+    include: [fraud-ui, fraud-review]
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `name` | string | Unique across services, tasks, dependencies and other profiles. |
+| `description` | string | What the subset is for. |
+| `include` | list | Services, tasks, dependencies, or other profiles. |
+
+```
+devctl fraud        # the profile
+devctl fraud-ui     # any single name works too, without declaring a profile
+devctl              # everything, as before
+```
+
+**What a profile lists are the roots, not the whole set.** Whatever they need
+comes with them: `depends_on`, transitively, and anything a `{{ reference }}`
+names, because a service that reads another's address needs it up whether or not
+it declared so.
+
+Narrowing happens before anything else reads the manifest, which is the point:
+a profile does not resolve dependencies it has no use for, and its run cannot be
+refused over a port belonging to a service it is not starting. `devctl fraud` on
+a machine with no cluster access works even when the wider manifest forwards
+three things from staging.
+
 ## logs
 
 Without this block devctl keeps the last 2000 lines of each process in memory

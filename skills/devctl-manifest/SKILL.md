@@ -79,6 +79,11 @@ inventory.
   source, plus any shared library it imports.
 - **Anything that has to run by hand?** Seeding, migrations, fixtures. Those are
   tasks, and say so in the description when one is destructive.
+- **Which subsets get worked on together?** Those are profiles, and the answer
+  is usually a sentence someone already says out loud: "the fraud console and
+  what it reads", "just the API". List the roots; devctl pulls in what they
+  need. Only worth declaring where a repository is big enough that nobody runs
+  all of it.
 - **Where should logs go?** Usually a gitignored `.devlogs` with a cap.
 
 ## 3. Write it

@@ -91,6 +91,10 @@ func main() {
 		return
 	}
 
+	// Anything left after the flags names what to run: a profile, or any single
+	// service, task or dependency.
+	targets := flag.Args()
+
 	manifestPath, err := findManifest(*manifest)
 	if err != nil {
 		fail(err)
@@ -106,6 +110,14 @@ func main() {
 		fail(err)
 	}
 	if err := ports.Validate(file); err != nil {
+		fail(err)
+	}
+
+	// Narrowing happens here, before anything else looks at the manifest, so a
+	// profile neither resolves dependencies it does not need nor has its run
+	// refused over a port belonging to a service it is not starting.
+	file, err = file.Select(targets)
+	if err != nil {
 		fail(err)
 	}
 

@@ -6,11 +6,29 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// Reference matches {{ service.port }}, {{ service.port.number }},
+// {{ service.port.url }} and {{ dependency.address }}. It lives here because it
+// is the manifest's own grammar; ports resolves it and profiles read it to work
+// out what a subset cannot run without.
+var Reference = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)(?:\.(number|url))?\s*\}\}`)
+
+// References names everything s refers to, by the first segment: the service or
+// dependency, not the port. Referring to something is depending on it, whether
+// or not depends_on says so.
+func References(s string) []string {
+	var out []string
+	for _, m := range Reference.FindAllStringSubmatch(s, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
 
 // Listen is how one listener's port reaches the process.
 type Listen struct {
@@ -140,10 +158,23 @@ func (s Service) Port(name string) (Port, bool) {
 type File struct {
 	// Logs, when set, keeps a file per service so a crash can be read after the
 	// panel has moved on.
-	Logs         *Logs        `yaml:"logs"`
+	Logs *Logs `yaml:"logs"`
+	// Profiles name subsets worth running on their own. Optional: without any,
+	// devctl runs everything.
+	Profiles     []Profile    `yaml:"profiles"`
 	Dependencies []Dependency `yaml:"dependencies"`
 	Services     []Service    `yaml:"services"`
 	Tasks        []Task       `yaml:"tasks"`
+}
+
+// Profile is a named subset of the manifest: the things someone actually works
+// on, without the rest of the repository coming up around them. What it lists
+// are the roots; what those need comes with them.
+type Profile struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	// Include names services, tasks, dependencies, or other profiles.
+	Include []string `yaml:"include"`
 }
 
 // Logs configures on-disk output. Without it devctl keeps the last 2000 lines
@@ -321,5 +352,7 @@ func (f *File) validate() error {
 			}
 		}
 	}
-	return nil
+	// Last, because it claims names in the same namespace and needs everything
+	// else already claimed.
+	return f.validateProfiles(claim)
 }

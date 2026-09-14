@@ -147,6 +147,32 @@ The command states the local port once, by referring to the port devctl gave it.
 Mark a dependency `optional: true` and an unconfigured or unreachable one warns
 rather than stops the run.
 
+## Running part of it
+
+A repository with thirty services rarely wants all thirty up. Name the subsets
+people actually work on:
+
+```yaml
+profiles:
+  - name: fraud
+    description: The fraud console and what it reads
+    include: [fraud-ui, fraud-review]
+```
+
+```
+devctl fraud        # the profile
+devctl fraud-ui     # any single name works too
+devctl              # everything
+```
+
+What a profile lists are the roots. What they need comes with them, following
+`depends_on` and any `{{ reference }}`, because a service that reads another's
+address needs it up whether or not it declared so.
+
+The narrowing happens before anything else reads the manifest, so a profile
+neither resolves dependencies it has no use for nor has its run refused over a
+port belonging to a service it is not starting.
+
 ## Your machine is not everyone's
 
 `devctl.mine.yaml`, beside the manifest and git-ignored, is merged over the top
