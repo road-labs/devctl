@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -37,6 +38,13 @@ type Spec struct {
 	Command string
 	Dir     string
 	Env     map[string]string
+	// LogFile, when set, receives every captured line as well as the ring. It
+	// is opened for append, so a restart continues the same file and the record
+	// outlives the panel.
+	LogFile string
+	// LogMaxSize rotates LogFile to <name>.1 at start when it is already over
+	// this many bytes. Zero never rotates.
+	LogMaxSize int64
 }
 
 // Process is a started command with a log ring.
@@ -45,6 +53,11 @@ type Process struct {
 	done      chan struct{}
 	logs      *ring
 	startedAt time.Time
+	logPath   string
+
+	// logMu guards the file: two capture goroutines write to it.
+	logMu   sync.Mutex
+	logFile *os.File
 
 	mu       sync.Mutex
 	state    State
@@ -73,7 +86,17 @@ func Start(spec Spec) (*Process, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
+	// Opened before the command, so a directory that cannot be written is an
+	// error the caller sees rather than output quietly going nowhere.
+	logFile, err := openLog(spec.LogFile, spec.LogMaxSize)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
@@ -83,6 +106,8 @@ func Start(spec Spec) (*Process, error) {
 		logs:      newRing(2000),
 		startedAt: time.Now(),
 		state:     StateRunning,
+		logPath:   spec.LogFile,
+		logFile:   logFile,
 	}
 
 	var readers sync.WaitGroup
@@ -99,17 +124,58 @@ func Start(spec Spec) (*Process, error) {
 			p.exitCode = cmd.ProcessState.ExitCode()
 		}
 		p.mu.Unlock()
+		p.logMu.Lock()
+		if p.logFile != nil {
+			_ = p.logFile.Close()
+			p.logFile = nil
+		}
+		p.logMu.Unlock()
 		close(p.done)
 	}()
 	return p, nil
 }
+
+// openLog prepares a service's log file: the directory, the rotation, and the
+// handle. Rotation rather than truncation, because a log over the limit is
+// usually the one about to be read; <name>.1 keeps the previous generation and
+// costs one rename.
+func openLog(path string, maxSize int64) (*os.File, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("log directory: %w", err)
+	}
+	if maxSize > 0 {
+		if info, err := os.Stat(path); err == nil && info.Size() > maxSize {
+			if err := os.Rename(path, path+".1"); err != nil {
+				return nil, fmt.Errorf("rotate log: %w", err)
+			}
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open log: %w", err)
+	}
+	return f, nil
+}
+
+// LogPath is where this process's output is being appended, or "" when the
+// manifest declares no log directory.
+func (p *Process) LogPath() string { return p.logPath }
 
 func (p *Process) capture(r interface{ Read([]byte) (int, error) }, wg *sync.WaitGroup) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
-		p.logs.add(scanner.Text())
+		line := scanner.Text()
+		p.logs.add(line)
+		p.logMu.Lock()
+		if p.logFile != nil {
+			_, _ = p.logFile.WriteString(line + "\n")
+		}
+		p.logMu.Unlock()
 	}
 }
 

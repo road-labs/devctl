@@ -136,7 +136,7 @@ address is meant to come from.
 
 One-shot commands: seeding a database, running a migration, generating
 fixtures. They appear under the services; `s` runs the selected one and its
-output goes to the log pane, ending in `done` or `failed (n)`.
+output goes to the log view, ending in `done` or `failed (n)`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -146,6 +146,38 @@ output goes to the log pane, ending in `done` or `failed (n)`.
 | `dir` | string | Working directory, relative to the manifest. |
 | `env` | map | Extra environment. May contain references. |
 | `depends_on` | list | Checked or started first. |
+
+## logs
+
+Without this block devctl keeps the last 2000 lines of each process in memory
+and nothing else, which is gone when devctl is. With it, every process also
+appends to its own file.
+
+```yaml
+logs:
+  dir: .devlogs
+  max_size: 10MB
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `dir` | string | Relative to the repository root, so it can be gitignored. Created if missing. |
+| `max_size` | string | Optional. `10MB`, `512KB`, `2GB`, or a plain byte count. |
+
+One `<name>.log` per dependency, service and task, opened for append, so a
+restart continues the same file and a crash can be read after the panel has
+moved on. `d` and the log view both print the path.
+
+A file already over `max_size` when its process starts is **rotated**, not
+truncated: it moves to `<name>.log.1`, replacing any previous one, and a fresh
+file begins. The log that has grown past the limit is usually the one about to
+be read, and one generation of history costs a rename. The check happens at
+start only, so a single very long run can exceed the limit; stop and start it
+to roll over.
+
+A `max_size` that cannot be read is an error at load rather than a silent zero,
+because a log that was meant to be capped and is not is a disk that fills up
+overnight.
 
 ## References
 

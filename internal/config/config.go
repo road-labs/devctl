@@ -6,6 +6,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -136,9 +138,59 @@ func (s Service) Port(name string) (Port, bool) {
 
 // File is the parsed services.yaml.
 type File struct {
+	// Logs, when set, keeps a file per service so a crash can be read after the
+	// panel has moved on.
+	Logs         *Logs        `yaml:"logs"`
 	Dependencies []Dependency `yaml:"dependencies"`
 	Services     []Service    `yaml:"services"`
 	Tasks        []Task       `yaml:"tasks"`
+}
+
+// Logs configures on-disk output. Without it devctl keeps the last 2000 lines
+// of each process in memory and nothing else, which is gone when devctl is.
+type Logs struct {
+	// Dir is relative to the repository root, so it can be gitignored. One
+	// <service>.log per row, appended to across restarts.
+	Dir string `yaml:"dir"`
+	// MaxSize is a size like "10MB" or "512KB", or a plain byte count. A file
+	// already over it at start is rotated to <service>.log.1 and begun again.
+	// Empty never rotates.
+	MaxSize string `yaml:"max_size"`
+}
+
+// sizeUnits are the suffixes MaxSize accepts, longest first so "MB" is matched
+// before "B".
+var sizeUnits = []struct {
+	suffix string
+	scale  int64
+}{
+	{"KB", 1 << 10}, {"MB", 1 << 20}, {"GB", 1 << 30},
+	{"K", 1 << 10}, {"M", 1 << 20}, {"G", 1 << 30},
+	{"B", 1},
+}
+
+// Bytes is MaxSize as a number. An unparseable value is an error rather than a
+// silent zero: a log that was meant to be capped and is not is a disk that
+// fills up overnight.
+func (l *Logs) Bytes() (int64, error) {
+	if l == nil || strings.TrimSpace(l.MaxSize) == "" {
+		return 0, nil
+	}
+	text := strings.ToUpper(strings.TrimSpace(l.MaxSize))
+	for _, unit := range sizeUnits {
+		if strings.HasSuffix(text, unit.suffix) {
+			n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimSuffix(text, unit.suffix)), 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("logs.max_size %q: %w", l.MaxSize, err)
+			}
+			return n * unit.scale, nil
+		}
+	}
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("logs.max_size %q: want a byte count or a size like 10MB", l.MaxSize)
+	}
+	return n, nil
 }
 
 // Load reads and validates the manifest.

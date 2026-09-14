@@ -62,7 +62,12 @@ type row struct {
 
 // Model is the Bubble Tea model.
 type Model struct {
-	root    string
+	root string
+	// logs is the manifest's log directory, and logBytes its size cap already
+	// parsed, so a start does not re-read a string every time.
+	logs     *config.Logs
+	logBytes int64
+
 	expand  ports.Expander
 	rows    []*row
 	byName  map[string]*row
@@ -84,7 +89,13 @@ type Model struct {
 // New builds the model from the manifest, the allocated port table and the
 // resolved dependency addresses.
 func New(root string, file *config.File, table ports.Table, values ports.Values, warnings []string) Model {
-	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, byName: map[string]*row{}, follow: true}
+	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, byName: map[string]*row{}, follow: true, logs: file.Logs}
+	// An unparseable size is reported once, here, rather than on every start.
+	size, err := file.Logs.Bytes()
+	if err != nil {
+		warnings = append(warnings, err.Error())
+	}
+	m.logBytes = size
 	m.viewport = viewport.New(80, 20)
 	// Scrolling keys only; f, b and space are ours.
 	m.viewport.KeyMap = viewport.KeyMap{
@@ -503,6 +514,16 @@ func (m Model) nextGroup(step int) int {
 	return first
 }
 
+// logPath is where a row's output is appended, or "" when the manifest declares
+// no log directory. One file per row, named for it, so a reader can open the
+// one they want without knowing what devctl called the run.
+func (m Model) logPath(r *row) string {
+	if m.logs == nil || m.logs.Dir == "" {
+		return ""
+	}
+	return filepath.Join(m.root, m.logs.Dir, r.cfg.Name+".log")
+}
+
 // envFor is the environment a row's process is given, and it is where devctl's
 // whole wiring model lands. Two sources, in this order:
 //
@@ -591,9 +612,11 @@ func (m *Model) start(r *row, visiting map[string]bool) tea.Cmd {
 	}
 
 	p, err := proc.Start(proc.Spec{
-		Command: command,
-		Dir:     filepath.Join(m.root, r.cfg.Dir),
-		Env:     env,
+		Command:    command,
+		Dir:        filepath.Join(m.root, r.cfg.Dir),
+		Env:        env,
+		LogFile:    m.logPath(r),
+		LogMaxSize: m.logBytes,
 	})
 	if err != nil {
 		m.message = fmt.Sprintf("%s: %v", r.cfg.Name, err)

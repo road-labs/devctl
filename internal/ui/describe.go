@@ -92,6 +92,11 @@ func (m Model) describeBody() string {
 	if r.cfg.Autostart {
 		field("autostart", "yes, started when devctl starts")
 	}
+	// Where to look once devctl is gone, which is the whole point of writing it
+	// to disk: the ring in memory dies with the panel.
+	if path := m.logPath(r); path != "" {
+		field("log file", tilde(path))
+	}
 
 	if len(r.cfg.Ports) > 0 {
 		b.WriteString("\n" + styleColumn.Render("listeners") + "\n")

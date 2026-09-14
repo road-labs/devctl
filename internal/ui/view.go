@@ -460,7 +460,15 @@ func (m Model) logViewString() string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("logs") + styleMuted.Render("  ·  "+state) + "\n")
+	head := styleTitle.Render("logs") + styleMuted.Render("  ·  "+state)
+	// The file behind the tail, when there is one: what is on screen is the last
+	// 2000 lines, and the answer to "where is the rest" should not need asking.
+	if r, ok := m.byName[m.logFilter]; ok {
+		if path := m.logPath(r); path != "" {
+			head += styleMuted.Render("  ·  " + tilde(path))
+		}
+	}
+	b.WriteString(head + "\n")
 	b.WriteString(strings.Join(tabs, " ") + "\n")
 	b.WriteString(m.viewport.View() + "\n")
 	b.WriteString(styleMuted.Render("←/→ or tab service  f follow  ↑↓ pgup pgdn scroll  g/G top/bottom  esc or L back  q quit"))

@@ -9,6 +9,12 @@ x-shared:
   # A value two places need. YAML anchors keep it stated once.
   api_key: &api_key dev-key-0000
 
+# Every process also appends to .devlogs/<name>.log, rotated to <name>.log.1
+# when it is already over the cap at start.
+logs:
+  dir: .devlogs
+  max_size: 10MB
+
 dependencies:
   # Provided by the machine. Its address comes from the environment or .env,
   # under the name in `env`, and is checked before anything starts.
