@@ -44,7 +44,10 @@ func main() {
 	// Everything in the manifest is relative to the directory holding it.
 	repoRoot := filepath.Dir(manifestPath)
 
-	file, err := config.Load(manifestPath)
+	// A personal overlay beside it, if there is one, says how this machine
+	// provides what the committed manifest asks for.
+	overlayPath := filepath.Join(repoRoot, config.OverlayName)
+	file, err := config.LoadWithOverlay(manifestPath, overlayPath)
 	if err != nil {
 		fail(err)
 	}

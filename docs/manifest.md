@@ -186,6 +186,39 @@ their own, away from what a port-forward or another tool is likely to take, and
 pin them there. Pinning a common port like 8080 turns a routine collision into a
 stopped run.
 
+## devctl.mine.yaml
+
+A file of the same shape beside the manifest, git-ignored, merged over it when
+it exists. The committed manifest says what the repository needs; this says how
+one machine provides it.
+
+Merge rules:
+
+- mappings merge key by key, recursively;
+- a list whose entries are mappings with a `name` merges by that name, so a
+  single port or environment variable can be changed without restating the
+  service around it, and an entry the manifest does not have is added;
+- anything else the overlay replaces outright.
+
+The merge happens on the documents, before either becomes a manifest, so a key
+present in the overlay wins even when its value is `false` or `0`. Setting
+`autostart: false` therefore turns autostart off, rather than reading as unset.
+
+The result is validated as a whole. When the overlay is what breaks it, the
+error names the overlay, since the committed manifest is presumably fine.
+
+```yaml
+# devctl.mine.yaml
+services:
+  - name: catalogue
+    ports:
+      - {name: grpc, port: 9999}
+    autostart: false
+```
+
+Add it to `.gitignore`. It is personal by definition, and a committed one is
+just a second manifest nobody agreed to.
+
 ## Validation
 
 `devctl -check` loads the manifest, resolves and pings the dependencies, prints

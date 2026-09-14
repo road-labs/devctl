@@ -147,6 +147,36 @@ The command states the local port once, by referring to the port devctl gave it.
 Mark a dependency `optional: true` and an unconfigured or unreachable one warns
 rather than stops the run.
 
+## Your machine is not everyone's
+
+`devctl.mine.yaml`, beside the manifest and git-ignored, is merged over the top
+when it exists. The committed manifest says what the repository needs; this says
+how your machine provides it.
+
+It exists because those are different questions. Everyone on a project needs a
+database. Whether it arrives from Docker, a container runtime or a box under
+someone's desk is nobody else's business, and a committed manifest that picks
+one forces it on everybody.
+
+```yaml
+# devctl.mine.yaml
+services:
+  - name: catalogue
+    ports:
+      - {name: grpc, port: 9999}   # 7201 is taken on this machine, permanently
+    autostart: false               # I start this one by hand
+    env:
+      LOG_LEVEL: debug
+```
+
+Merging is by name and by key, so you change one thing without restating what
+surrounds it: the other ports stay, the other environment variables stay, the
+command stays. An entry the manifest does not have is added, so you can keep a
+scratch service or a personal task without committing it.
+
+Because the merge happens on the file rather than on parsed values, `false` and
+`0` in the overlay mean what they say rather than reading as "not set".
+
 ## Keys
 
 | | |

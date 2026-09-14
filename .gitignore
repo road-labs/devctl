@@ -7,3 +7,6 @@
 # IDE
 .idea/
 .vscode/
+
+# The personal overlay is never committed.
+devctl.mine.yaml
