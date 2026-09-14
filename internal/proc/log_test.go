@@ -27,9 +27,38 @@ func TestLogFileAppendsAcrossRuns(t *testing.T) {
 	assert.Equal(t, "first\nsecond\n", string(body), "the directory is created and the file appended")
 }
 
-// A file already over the cap is rotated rather than truncated: the log over the
-// limit is usually the one about to be read.
-func TestLogFileRotatesWhenOverSize(t *testing.T) {
+// The cap holds while the process runs, not only when it starts. devctl runs
+// all day and a service started this morning is the same process this evening,
+// so a check that only ran at start would let one file grow without limit.
+func TestLogFileRollsWhileRunning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "svc.log")
+
+	// Forty lines of ten bytes against a 100 byte cap: several rolls, not one.
+	p, err := Start(Spec{
+		Command:    "for i in $(seq 1 40); do echo 123456789; done",
+		LogFile:    path,
+		LogMaxSize: 100,
+	})
+	require.NoError(t, err)
+	waitForExit(t, p)
+
+	current, err := os.Stat(path)
+	require.NoError(t, err)
+	previous, err := os.Stat(path + ".1")
+	require.NoError(t, err)
+
+	assert.LessOrEqual(t, current.Size(), int64(100), "the live file stays under the cap")
+	assert.LessOrEqual(t, previous.Size(), int64(100), "and so does the one generation kept")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "two files per row, for ever: the log and its predecessor")
+}
+
+// A file already over the cap rolls on the first line written to it, rather
+// than being truncated: the log over the limit is usually the one about to be
+// read, and a generation of history costs a rename.
+func TestLogFileRollsWhatWasAlreadyOverTheCap(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "svc.log")
 	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("x", 200)), 0o644))
