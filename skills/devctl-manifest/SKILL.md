@@ -25,6 +25,39 @@ into whatever people already type to start things.
 
 ---
 
+## What devctl does, so you are not reverse-engineering it
+
+Six facts. Together they are the whole model, and several of the mistakes
+further down are someone assuming one of them works another way.
+
+**One file.** `devctl.yaml`, found by walking up from the working directory the
+way git finds `.git`. Every relative path in it resolves against the directory
+holding it. `devctl.mine.yaml` beside it, when present, overlays it and is never
+committed.
+
+**Ports are decided at start, not bound.** devctl allocates a number for every
+declared listener before anything runs: a free default is kept, a taken one is
+replaced and reported, a `fixed` one that is taken refuses the run. Services
+bind them themselves, through the variable `listen` names.
+
+**A process is given the shell's environment, then its own listeners, then its
+declared `env`.** Later wins, so a value in the manifest overrides one the
+developer happened to have exported. Every `{{ reference }}` is resolved first.
+
+**`.env` is not loaded into the process.** This is the one people get wrong. It
+is read only to find the addresses of dependencies the machine provides, and
+only under the exact names those dependencies declare in `env:`. Anything else
+in `.env` is ignored, so a service that needs `STRIPE_KEY` must say so in the
+manifest; putting it in `.env` does nothing.
+
+**The environment beats the file.** For a dependency's address devctl checks the
+process environment first, then `<root>/.env`. So exporting a variable
+temporarily overrides the file without editing it.
+
+**Nothing else is read.** No implicit config, no conventions, no defaults
+discovered from the repository. If the manifest does not say it, it does not
+happen. That is the point: the file is the whole answer to "how do I run this".
+
 ## 1. Read. Most of it is already written down somewhere
 
 Do this before asking anything. An operator who is asked what they already
@@ -163,6 +196,10 @@ or `task dev`. That is the whole point of the exercise.
 - **A description that repeats the name.** "identity: the identity service"
   helps nobody. Say what it serves and who talks to it; that line is what the
   panel and `d` show.
+- **Putting a service's variable in `.env`.** devctl reads `.env` only for
+  dependency addresses, under the names dependencies declare. A service's own
+  variables belong in its `env`, referencing a dependency where they need an
+  address.
 - **Secrets.** There are none in this file. Machine-provided addresses come from
   `.env`, which is not committed.
 

@@ -130,6 +130,15 @@ is not there.
 DATABASE_URL=postgres://localhost:5432/shop
 ```
 
+`.env` is not loaded into your services. devctl reads it only for the addresses
+of dependencies, under the exact names they declare in `env`, and your own
+environment beats the file. A service's own variables belong in its `env` in the
+manifest; putting them in `.env` does nothing.
+
+What a service is given is your shell's environment, then its listeners, then
+its declared `env` with every reference resolved. Later wins, so the manifest
+overrides anything you happened to have exported.
+
 **Forwarded by devctl.** Something in a remote cluster, reached through a
 tunnel. It is a row with a local port and the command that opens it; select it
 and press `s`. Nothing waits for a tunnel, so without one only the screens that
