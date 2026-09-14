@@ -20,7 +20,8 @@ Almost nobody gets stuck on the YAML. They get stuck because a manifest has to
 state things the repository never wrote down in one place, and a few things only
 a person knows.
 
-So the job is in three parts, in this order: read, ask, then write.
+So the job is in four parts, in this order: read, ask, write, and then wire it
+into whatever people already type to start things.
 
 ---
 
@@ -105,6 +106,41 @@ services:
 
 `listen` says which variable the process reads for its own listener; `env`
 references carry other people's. Neither contains a number.
+
+## 4. Wire it into how people already start things
+
+A manifest nobody knows how to run is a file nobody runs. If the repository
+root has a `Makefile`, a `Taskfile.yml` or a `justfile`, people type that, not
+`go tool devctl`, so finish the job there.
+
+**Check whether the name is free first.** Grep for a `dev` target. If there is
+one, do not touch it: say what it does today and ask what to call this instead,
+because a target somebody else's muscle memory depends on is not yours to
+repoint.
+
+**Match how devctl is installed**, which `go.mod` tells you:
+
+| In `go.mod` | The line |
+| --- | --- |
+| a `tool github.com/road-labs/devctl` directive | `go tool devctl` |
+| a `require` only | `go run github.com/road-labs/devctl` |
+| nothing | `devctl`, and say it needs installing |
+
+```make
+.PHONY: dev
+dev:
+	go tool devctl
+```
+
+```yaml
+  dev:
+    desc: Run the services locally
+    cmds:
+      - go tool devctl
+```
+
+Then say the sentence the README section this replaces used to say: `make dev`,
+or `task dev`. That is the whole point of the exercise.
 
 ## The mistakes worth naming
 
