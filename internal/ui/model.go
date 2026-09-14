@@ -90,12 +90,8 @@ type Model struct {
 // resolved dependency addresses.
 func New(root string, file *config.File, table ports.Table, values ports.Values, warnings []string) Model {
 	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, byName: map[string]*row{}, follow: true, logs: file.Logs}
-	// An unparseable size is reported once, here, rather than on every start.
-	size, err := file.Logs.Bytes()
-	if err != nil {
-		warnings = append(warnings, err.Error())
-	}
-	m.logBytes = size
+	// Load has already refused an unparseable size, so this cannot fail here.
+	m.logBytes, _ = file.Logs.Bytes()
 	m.viewport = viewport.New(80, 20)
 	// Scrolling keys only; f, b and space are ours.
 	m.viewport.KeyMap = viewport.KeyMap{

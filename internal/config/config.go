@@ -213,6 +213,11 @@ func (f *File) validate() error {
 	if len(f.Services) == 0 {
 		return fmt.Errorf("no services defined")
 	}
+	// Checked here so `-check` catches it, rather than at the first start, where
+	// a cap that does not parse would quietly become no cap at all.
+	if _, err := f.Logs.Bytes(); err != nil {
+		return err
+	}
 	// One namespace for everything the panel shows and depends_on can name.
 	seen := map[string]string{}
 	claim := func(name, what string) error {

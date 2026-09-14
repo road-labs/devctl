@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,4 +41,22 @@ func TestLogsNilIsNoCap(t *testing.T) {
 	got, err := logs.Bytes()
 	require.NoError(t, err)
 	assert.Zero(t, got)
+}
+
+// The cap is checked when the manifest loads, so `-check` refuses it rather
+// than the first start silently running without one.
+func TestLoadRefusesAnUnreadableMaxSize(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/devctl.yaml"
+	require.NoError(t, os.WriteFile(path, []byte(`
+logs:
+  dir: .devlogs
+  max_size: ten megabytes
+services:
+  - name: svc
+    cmd: "true"
+`), 0o644))
+
+	_, err := Load(path)
+	require.ErrorContains(t, err, "max_size")
 }
