@@ -1,8 +1,8 @@
 # devctl
 
 Run a repository's services locally from one panel: each on its own ports, with
-its status, its logs and a key to restart it. Everything devctl knows comes from
-one file at the root of your repository, `devctl.yaml`.
+its status, its logs, its dependencies and a key to restart it. Everything
+devctl knows comes from one file at the root of your repository, `devctl.yaml`.
 
 It is a terminal panel, not a daemon. Nothing is installed, no state is kept
 between runs, and quitting stops everything it started.
@@ -38,8 +38,8 @@ Or standalone:
 go install github.com/road-labs/devctl@latest
 ```
 
-Requires Go 1.24 or newer for `go tool`; the program itself builds with older
-versions.
+`go.mod` declares Go 1.27.1, so that is what building it needs. `go tool`
+itself arrived in 1.24.
 
 ## The manifest
 
@@ -177,34 +177,72 @@ scratch service or a personal task without committing it.
 Because the merge happens on the file rather than on parsed values, `false` and
 `0` in the overlay mean what they say rather than reading as "not set".
 
-## Keys
+## The panel
+
+One table. Dependencies, then services with a line per listener under each, then
+tasks, separated by a rule. `TYPE` says which is which, `ENDPOINT` carries a
+dependency's address or a listener's port, `RESTARTS` counts how many times a
+process has come back, and `WATCH` says whether it restarts itself. The header
+above it carries what devctl is running for, the keys, and what the markers
+mean.
 
 | | |
 | --- | --- |
 | `s` | start a service, run a task, open a forward |
 | `x` | stop |
 | `r` | restart |
-| `a` | start everything marked `autostart` |
 | `w` | auto-restart on or off for this service |
-| `l` | show or hide the log pane |
-| `L` | full-screen logs |
+| `d` | describe the selected row |
+| `l` | logs for this row |
+| `L` | logs for everything |
 | `j` `k` | move |
+| `pgup` `pgdn` | to the band above or below |
 | `q` | quit, stopping everything devctl started |
+
+## Describe
+
+`d` opens everything devctl knows about a row: its status and uptime, the
+command it runs and the directory it runs in, its listeners with declared
+against actual ports, the environment it is handed with every reference
+resolved, and the dependency graph both ways.
+
+Both directions matter. What a row depends on is in the manifest; what depends
+on *it* is not, and that is the question a dependency's owner has, which is who
+breaks if this is down.
+
+The environment is shown even when it cannot be resolved, because a reference
+that does not resolve is exactly why the row will not start.
 
 ## Logs
 
-The pane under the table tails the selected row. `L` opens the full-screen view:
-every process merged in arrival order with each line prefixed by its service, or
-one service on its own. `←` `→` or `tab` move between them, `g` and `G` jump to
-the ends, `f` follows the tail, which also stops when you scroll up and resumes
-when you reach the bottom. `esc` returns.
+`l` opens the selected row's output, `L` every process merged in arrival order
+with each line prefixed by its service. `←` `→` or `tab` move between them, `g`
+and `G` jump to the ends, `f` follows the tail, which also stops when you scroll
+up and resumes when you reach the bottom. `esc` returns.
+
+That is the last 2000 lines of each process, kept in memory and gone when devctl
+is. To keep them, give the manifest a log directory:
+
+```yaml
+logs:
+  dir: .devlogs
+  max_size: 2MB
+```
+
+One `<name>.log` per row, appended to across restarts, so a service that died
+while you were reading something else can still be read afterwards. A file
+already over the cap when its process starts is emptied and begun again. Both
+`d` and the log view print the path. Gitignore the directory.
 
 ## Auto-restart
 
 A service with a `watch` list restarts when a Go file, `go.mod` or `go.sum`
 under those directories changes, after a short quiet period so a multi-file save
-restarts once. `↻` marks it; `w` turns it off per service. Leave the list empty
-for anything that reloads itself, such as a Next.js dev server.
+restarts once. The `WATCH` column says `on` or `off`; `w` toggles it. Leave the
+list empty for anything that reloads itself, such as a Next.js dev server.
+
+Services marked `autostart` in the manifest come up when devctl does, so there
+is no key for it.
 
 ## Starting a manifest
 
