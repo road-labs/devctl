@@ -10,3 +10,7 @@
 
 # The personal overlay is never committed.
 devctl.mine.yaml
+
+# Per-service logs from a local run. testdata/devctl.yaml declares this
+# directory, so running devctl in this checkout creates it here too.
+.devlogs/
