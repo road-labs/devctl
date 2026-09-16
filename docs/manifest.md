@@ -92,7 +92,7 @@ of three kinds: provided by the machine (`env`), forwarded by devctl (`port` +
 | --- | --- | --- |
 | `name` | string | Unique. Used in `{{ name.address }}` or `{{ name.port }}`. |
 | `description` | string | One line, shown in the panel. |
-| `kind` | string | How a machine-provided one is checked: `mongo` for a driver ping, `tcp` for a dial. Defaults to `tcp`. |
+| `kind` | string | Reachability check label. `mongo` and `tcp` both dial the address; `mongo://` defaults the port to 27017. Defaults to `tcp`. |
 | `optional` | bool | Warn rather than stop when missing or unreachable. |
 | `env` | string | Machine-provided: the variable holding its address. |
 | `example` | string | Shown when that variable is missing, so the fix is copy-paste. |

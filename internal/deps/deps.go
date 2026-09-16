@@ -1,9 +1,9 @@
 // Package deps resolves and checks what a run needs from outside this
-// repository. A dependency the machine provides (today: MongoDB) names the
-// environment variable holding its address; the value comes from the process
-// environment or, failing that, the repository's .env, and a required one is
-// checked to be reachable before anything starts. A dependency devctl forwards
-// is brought up from the panel and is not checked here.
+// repository. A dependency the machine provides names the environment variable
+// holding its address; the value comes from the process environment or, failing
+// that, the repository's .env, and a required one is checked to be reachable
+// before anything starts. A dependency devctl forwards is brought up from the
+// panel and is not checked here.
 package deps
 
 import (
@@ -17,11 +17,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
-
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/road-labs/devctl/internal/config"
 	"github.com/road-labs/devctl/internal/ports"
@@ -121,10 +116,10 @@ func readEnvFile(path string) (map[string]string, error) {
 	return out, scanner.Err()
 }
 
-// Check verifies each configured machine-provided dependency answers: a Mongo
-// ping for kind mongo, a TCP dial otherwise. A required one that does not is
-// an error; an optional one is reported as a warning. Forwarded dependencies
-// are not checked, they are started from the panel.
+// Check verifies each configured machine-provided dependency answers, by dialing
+// the host and port its address names. A required one that does not is an error;
+// an optional one is reported as a warning. Forwarded dependencies are not
+// checked, they are started from the panel.
 func Check(ctx context.Context, deps []config.Dependency, values ports.Values) ([]string, error) {
 	var warnings []string
 	for _, dep := range deps {
@@ -135,33 +130,16 @@ func Check(ctx context.Context, deps []config.Dependency, values ports.Values) (
 		if value == "" {
 			continue // optional and unconfigured; Resolve refused a required one
 		}
-		var err error
-		switch dep.Kind {
-		case "mongo":
-			err = pingMongo(ctx, value)
-		default:
-			err = dial(ctx, value)
+		if err := dial(ctx, value); err != nil {
+			problem := fmt.Sprintf("%s (%s=%s) is not reachable: %v", dep.Name, dep.Env, Redact(value), err)
+			if dep.Optional {
+				warnings = append(warnings, problem)
+				continue
+			}
+			return warnings, errors.New(problem)
 		}
-		if err == nil {
-			continue
-		}
-		problem := fmt.Sprintf("%s (%s=%s) is not reachable: %v", dep.Name, dep.Env, Redact(value), err)
-		if dep.Optional {
-			warnings = append(warnings, problem)
-			continue
-		}
-		return warnings, errors.New(problem)
 	}
 	return warnings, nil
-}
-
-func pingMongo(ctx context.Context, dsn string) error {
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(dsn).SetServerSelectionTimeout(3*time.Second).SetConnectTimeout(3*time.Second))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = client.Disconnect(context.Background()) }()
-	return client.Ping(ctx, readpref.Primary())
 }
 
 func dial(ctx context.Context, address string) error {

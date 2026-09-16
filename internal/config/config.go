@@ -126,7 +126,7 @@ type Dependency struct {
 	Description string `yaml:"description"`
 	Env         string `yaml:"env"`
 	Example     string `yaml:"example"`
-	Kind        string `yaml:"kind"` // mongo (ping) or tcp (dial)
+	Kind        string `yaml:"kind"` // mongo or tcp; both a TCP dial, the label aside
 	Optional    bool   `yaml:"optional"`
 	// Port and Forward describe a dependency devctl tunnels to.
 	Port    int      `yaml:"port"`
