@@ -107,16 +107,27 @@ func (f *File) Select(targets []string) (*File, error) {
 		if mode, ok := overrides[d.Name]; ok {
 			d.Default = mode
 		}
-		if setsAutostart {
+		switch {
+		case setsAutostart:
 			d.Autostart = autostart[d.Name]
+		case roots[d.Name]:
+			// You named this forward, so open it at start; a forward pulled in
+			// only as something else's closure keeps its own flag.
+			d.Autostart = true
 		}
 		out.Dependencies = append(out.Dependencies, d)
 	}
 	for _, s := range f.Services {
 		if want[s.Name] {
 			s.Env = withRunEnv(s.Env, runEnv)
-			if setsAutostart {
+			switch {
+			case setsAutostart:
 				s.Autostart = autostart[s.Name]
+			case roots[s.Name]:
+				// A targeted run starts what it names. The closure it pulls in
+				// follows through depends_on, so a service named as a root brings
+				// its backing services up with it.
+				s.Autostart = true
 			}
 			out.Services = append(out.Services, s)
 		}

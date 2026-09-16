@@ -342,10 +342,19 @@ and let a profile contradict the mode it chose. The two compose: a profile picks
 each dependency's mode (each mode brings its own `provides`) and adds only what
 is genuinely run-wide.
 
-A profile can also set `autostart`: the services and forwarded dependencies that
-come up on their own for that run. It is the whole set, overriding each thing's
-own `autostart`, so a profile both starts what it lists and leaves down what it
-does not.
+A targeted run starts what it names. `devctl fraud-ui` (a single name) or
+`devctl fraud` (a profile) autostarts the roots it selects, and their backing
+services follow through `depends_on`; nothing needs `autostart: true` in the
+manifest for a named run to come up. A bare `devctl` with no target is the
+exception, and there the manifest's own `autostart` flags decide, so a repository
+can leave everything down on a bare run yet still have a named run bring its
+subset up.
+
+A profile can also set `autostart` explicitly: the services and forwarded
+dependencies that come up on their own for that run. When a profile sets one it
+is the whole set, overriding both each thing's own `autostart` and the
+name-it-to-run default above, so a profile both starts what it lists and leaves
+down what it does not.
 
 ```yaml
 profiles:

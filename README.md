@@ -260,6 +260,14 @@ What a profile lists are the roots. What they need comes with them, following
 `depends_on` and any `{{ reference }}`, because a service that reads another's
 address needs it up whether or not it declared so.
 
+Naming a target runs it. `devctl fraud-ui` starts fraud-ui, and `devctl fraud`
+starts the profile's roots, without anything needing `autostart: true` in the
+manifest; the backing services follow through `depends_on`. A bare `devctl` with
+no target is the exception: there the manifest's own `autostart` flags decide
+what comes up, so a repository can leave everything down on a bare run and still
+have `devctl fraud` bring the fraud console up. A profile's `autostart` list, when
+it sets one, stays definitive and overrides both.
+
 The narrowing happens before anything else reads the manifest, so a profile
 neither resolves dependencies it has no use for nor has its run refused over a
 port belonging to a service it is not starting.

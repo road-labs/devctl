@@ -129,8 +129,13 @@ inventory.
   pinned and everything else is free to move. Getting this wrong either way
   hurts: pinning everything means a run refuses to start over a port nothing
   refers to, and pinning nothing breaks the other repository silently.
-- **What should be up the moment devctl opens?** That is `autostart`. The rest
-  wait for `s`.
+- **What should be up on a bare `devctl`, with no target named?** That is
+  `autostart`. A named run does not need it: `devctl fraud-ui` or `devctl fraud`
+  already starts the roots it selects, and their backing services follow through
+  `depends_on`. So `autostart: true` is for what a bare run brings up, and for a
+  forward you want open at start. The rest wait for `s`. A repository driven
+  entirely by profiles can leave every service without it: bare `devctl` then
+  shows everything and starts nothing, and each profile still runs its subset.
 - **Which directories, when they change, should restart a service?** Its own
   source, plus any shared library it imports.
 - **Anything that has to run by hand?** Seeding, migrations, fixtures. Those are

@@ -190,6 +190,44 @@ func TestProfileAutostartOverridesTheRun(t *testing.T) {
 	assert.False(t, svc(run, "b").Autostart, "not listed, so it does not, even though it autostarts by default")
 }
 
+// Naming a target runs it. A bare name (or a profile with no autostart list)
+// autostarts the roots it selects, and their backing services follow through
+// depends_on, so `devctl ui` brings up the thing you asked for. A bare run with
+// no target leaves the manifest's own flags alone.
+func TestTargetedRunAutostartsWhatItNames(t *testing.T) {
+	body := "profiles:\n  - name: ui\n    include: [web]\nservices:\n" +
+		"  - name: web\n    cmd: x\n    depends_on: [api]\n" +
+		"  - name: api\n    cmd: y\n"
+	path := filepath.Join(t.TempDir(), "devctl.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	f, err := Load(path)
+	require.NoError(t, err)
+
+	svc := func(file *File, name string) Service {
+		for _, s := range file.Services {
+			if s.Name == name {
+				return s
+			}
+		}
+		t.Fatalf("%s missing", name)
+		return Service{}
+	}
+
+	base, err := f.Select(nil)
+	require.NoError(t, err)
+	assert.False(t, svc(base, "web").Autostart, "a bare run keeps the manifest flags")
+
+	byName, err := f.Select([]string{"web"})
+	require.NoError(t, err)
+	assert.True(t, svc(byName, "web").Autostart, "the named root starts")
+	assert.False(t, svc(byName, "api").Autostart,
+		"a closure service keeps its flag; it comes up through web's depends_on")
+
+	byProfile, err := f.Select([]string{"ui"})
+	require.NoError(t, err)
+	assert.True(t, svc(byProfile, "web").Autostart, "a profile's include is a root and starts")
+}
+
 // A profile that autostarts something that is not a service or dependency is
 // caught at load.
 func TestProfileAutostartValidation(t *testing.T) {
