@@ -13,7 +13,12 @@ import (
 
 func main() {
 	addr := os.Getenv("PLATFORM_ADDR")
-	log.Printf("billing started, platform at %q", addr)
+	// PLATFORM_SOURCE rides the platform dependency's mode; BILLING_BANNER comes
+	// from the profile. Both were set by devctl, not by this service.
+	log.Printf("billing started, platform at %q (source: %s)", addr, os.Getenv("PLATFORM_SOURCE"))
+	if banner := os.Getenv("BILLING_BANNER"); banner != "" {
+		log.Printf("billing: %s", banner)
+	}
 	for range time.Tick(3 * time.Second) {
 		if addr == "" {
 			log.Println("billing: no platform address yet — start the platform devctl, or press m then s to use the mock")

@@ -103,6 +103,8 @@ func main() {
 	check := flag.Bool("check", false, "validate the manifest, resolve and check dependencies, print the plan and exit")
 	example := flag.Bool("example", false, "print a worked example manifest and exit")
 	skill := flag.Bool("skill", false, "print the agent skill for writing a "+ManifestName+" and exit")
+	completion := flag.String("completion", "", "print a shell completion script (bash, zsh or fish) and exit")
+	complete := flag.Bool("complete", false, "list the run targets for shell completion and exit")
 	flag.Parse()
 
 	// Both print rather than write: what to do with them is the reader's
@@ -116,6 +118,16 @@ func main() {
 		if err := fetchSkill(os.Stdout); err != nil {
 			fail(err)
 		}
+		return
+	case *completion != "":
+		if err := printCompletion(os.Stdout, *completion); err != nil {
+			fail(err)
+		}
+		return
+	case *complete:
+		// The candidates a shell offers for `devctl <TAB>`. Silent on any error:
+		// completion runs on every keypress and must never print a diagnostic.
+		printTargets(*manifest)
 		return
 	}
 
@@ -183,10 +195,28 @@ func main() {
 		return
 	}
 
-	// Publish this devctl's ports so a sibling that peers with it by id can read
-	// the numbers it actually got. Nothing is published without an id.
+	// Publish this devctl's ports, and the config each service provides, so a
+	// sibling that peers with it by id reads the numbers it actually got and
+	// inherits that service's config. Nothing is published without an id.
 	if file.ID != "" {
-		closer, err := peer.Serve(peer.Snapshot{ID: file.ID, Ports: table})
+		expand := ports.Expander{Ports: table, Values: values}
+		provided := map[string]map[string]string{}
+		for _, svc := range file.Services {
+			if len(svc.Provides) == 0 {
+				continue
+			}
+			resolved := map[string]string{}
+			for k, v := range svc.Provides {
+				// Publish the concrete value; a sibling cannot resolve our references.
+				out, err := expand.Expand(v)
+				if err != nil {
+					fail(fmt.Errorf("service %s provides %s: %w", svc.Name, k, err))
+				}
+				resolved[k] = out
+			}
+			provided[svc.Name] = resolved
+		}
+		closer, err := peer.Serve(peer.Snapshot{ID: file.ID, Ports: table, Provides: provided})
 		if err != nil {
 			fail(err)
 		}
@@ -374,3 +404,70 @@ func depSummary(d config.Dependency, table ports.Table, values ports.Values, exp
 	}
 	return body
 }
+
+// printTargets lists what `devctl <name>` accepts for the manifest nearest the
+// working directory: profiles, and every single service, task and dependency. It
+// is what the completion scripts call. Every error is swallowed, since completion
+// runs on a keystroke and a stray line would land in the user's prompt.
+func printTargets(manifest string) {
+	path, err := findManifest(manifest)
+	if err != nil {
+		return
+	}
+	file, err := config.LoadWithOverlay(path, filepath.Join(filepath.Dir(path), config.OverlayName))
+	if err != nil {
+		return
+	}
+	for _, name := range file.Targets() {
+		fmt.Println(name)
+	}
+}
+
+// printCompletion writes the completion script for one shell. Each script calls
+// `devctl -complete` for the target list, so completion follows the manifest in
+// whatever directory the shell sits in, profiles and all.
+func printCompletion(out io.Writer, shell string) error {
+	switch shell {
+	case "bash":
+		fmt.Fprint(out, bashCompletion)
+	case "zsh":
+		fmt.Fprint(out, zshCompletion)
+	case "fish":
+		fmt.Fprint(out, fishCompletion)
+	default:
+		return fmt.Errorf("unknown shell %q; one of bash, zsh, fish", shell)
+	}
+	return nil
+}
+
+const bashCompletion = `# devctl bash completion. Load it with:  source <(devctl -completion bash)
+_devctl() {
+	local cur="${COMP_WORDS[COMP_CWORD]}"
+	if [[ "$cur" == -* ]]; then
+		COMPREPLY=($(compgen -W "-manifest -check -example -skill -completion -complete" -- "$cur"))
+		return
+	fi
+	COMPREPLY=($(compgen -W "$(devctl -complete 2>/dev/null)" -- "$cur"))
+}
+complete -F _devctl devctl
+`
+
+const zshCompletion = `#compdef devctl
+# devctl zsh completion. Load it with:  source <(devctl -completion zsh)
+_devctl() {
+	local -a targets
+	targets=(${(f)"$(devctl -complete 2>/dev/null)"})
+	_describe -t targets 'run target' targets
+}
+compdef _devctl devctl
+`
+
+const fishCompletion = `# devctl fish completion. Install it with:
+#   devctl -completion fish > ~/.config/fish/completions/devctl.fish
+complete -c devctl -f -a "(devctl -complete 2>/dev/null)" -d target
+complete -c devctl -f -l manifest -d "path to devctl.yaml"
+complete -c devctl -f -l check -d "validate and print the plan"
+complete -c devctl -f -l example -d "print a worked example manifest"
+complete -c devctl -f -l skill -d "print the agent skill"
+complete -c devctl -f -l completion -d "print a completion script"
+`

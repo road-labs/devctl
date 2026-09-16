@@ -38,6 +38,7 @@ What devctl runs. Each needs at least a `name` and a `cmd`.
 | `ports` | list | Listeners, see below. A service may have none. |
 | `listen` | map | Which environment variable carries each listener's address, see below. |
 | `env` | map | Extra environment. Values may contain references. |
+| `provides` | map | Config this service hands its consumers, local and peered, see [provides](#provides-config-that-rides-a-mode). |
 | `depends_on` | list | Names of services and dependencies started or checked first. |
 | `autostart` | bool | Started by `a`, and on launch. |
 | `watch` | list | Directories whose Go source changes restart this service. |
@@ -98,7 +99,9 @@ of three kinds: provided by the machine (`env`), forwarded by devctl (`port` +
 | `example` | string | Shown when that variable is missing, so the fix is copy-paste. |
 | `port` | int | Forwarded: the local port. |
 | `forward` | map | Forwarded: `{cmd, dir}` opening the tunnel. |
+| `autostart` | bool | Forwarded: open the tunnel when devctl starts, rather than on `s`. |
 | `peer` | map | Peered: `{id, service, port}` naming a sibling devctl's listener. |
+| `provides` | map | Env handed to services that depend on this, see below. |
 | `modes` | list | Several named sources to switch between, see below. |
 | `default` | string | Which mode is live at start. Defaults to the first. |
 
@@ -158,6 +161,11 @@ sibling. Until the sibling with that `id` is running the row shows `waiting`, an
 it becomes `peered` the moment the sibling comes up. The sibling must set a
 top-level [`id`](#id) for this to find it.
 
+A peer also **inherits the config the peered service publishes**. If the sibling's
+`identity` service has `provides`, a service depending on this peer is handed
+them, resolved by the sibling, so config the sibling owns is stated once and read
+live over the socket. A mode's own `provides` override an inherited value.
+
 ### Several sources (modes)
 
 A dependency you point at a local service one minute and a port-forwarded
@@ -189,12 +197,52 @@ where there is only one shape to resolve.
 a developer uses day to day is a personal choice. It overlays the `default`
 without restating the modes.
 
+### provides: config that rides a mode
+
+Some config is a function of which mode a dependency is in, not an address. The
+identity provider reached locally has one OIDC issuer URL and client id; reached
+through staging it has another. That belongs on the mode, as `provides`: env
+handed to every service that depends on the dependency, swapped with the address
+when the mode switches.
+
+```yaml
+  - name: identity
+    default: staging
+    modes:
+      - name: local
+        peer: {id: platform, service: identity, port: grpc}
+        provides:
+          OIDC_PROVIDER_URL: http://localhost:24700/
+          OIDC_CLIENT_ID: finance
+      - name: staging
+        port: 9490
+        forward: {cmd: "kubectl ... svc/identity {{ identity.port.number }}:9090"}
+        provides:
+          OIDC_PROVIDER_URL: https://id.public.road.dev/
+          OIDC_CLIENT_ID: d99d247a-...
+```
+
+A service that `depends_on: [identity]` is handed `OIDC_PROVIDER_URL` and
+`OIDC_CLIENT_ID`, and `m` on the identity row (or a profile choosing its mode)
+swaps both. The service's own `env` still wins over a provided value, so it is a
+default it can override. Values may contain references. A single-source
+dependency can carry `provides` inline, the same as a mode.
+
+**A service can carry `provides` too**, and then it publishes them: the config a
+service hands its consumers, resolved and put on this devctl's socket, so a
+sibling that peers with the service inherits it. The value is stated once, by the
+service that owns it. See [Peered with a sibling devctl](#peered-with-a-sibling-devctl).
+
+Config that belongs to the run rather than to one dependency's mode goes in a
+profile's [`env`](#modes-how-a-profile-wires-its-dependencies) instead.
+
 ## id
 
 The name this devctl goes by to its siblings. Set it, and devctl publishes its
-allocated ports on a socket in a shared temp directory keyed by the id, so
-another repository's devctl can read them with a [`peer`](#peered-with-a-sibling-devctl)
-dependency. Without an id nothing is published and nothing changes.
+allocated ports, and the config each service `provides`, on a socket in a shared
+temp directory keyed by the id, so another repository's devctl can read them with
+a [`peer`](#peered-with-a-sibling-devctl) dependency. Without an id nothing is
+published and nothing changes.
 
 ```yaml
 id: platform
@@ -242,6 +290,8 @@ profiles:
 | `description` | string | What the subset is for. |
 | `include` | list | Services, tasks, dependencies, or other profiles. |
 | `modes` | map | Starting mode per multi-mode dependency, see below. |
+| `env` | map | Run-level env for this profile, over every service's own, see below. |
+| `autostart` | list | The services and forwards that come up for this run, see below. |
 
 ```
 devctl fraud        # the profile
@@ -270,6 +320,41 @@ configuration, not a lock: `m` still switches at runtime. A key must name a
 dependency that has modes, and the value one of that dependency's mode names, or
 the manifest is rejected at load. Two selected profiles that set one dependency
 to different modes is an error, since the run cannot honour both.
+
+A profile can also carry `env`: run-level config for that launch, applied to
+every service and task in it, over their own env.
+
+```yaml
+profiles:
+  - name: dev
+    include: [ui]
+    modes: {identity: staging, billing: local, pricing: local}
+    env:   {APP_ENVIRONMENT: local}
+```
+
+Use it for config that belongs to the *run* rather than to any one dependency's
+mode. Config that follows a dependency's mode, like an auth bundle that changes
+with the identity source, belongs in that mode's [`provides`](#provides-config-that-rides-a-mode);
+putting it on the profile would repeat it in every profile that shares the mode
+and let a profile contradict the mode it chose. The two compose: a profile picks
+each dependency's mode (each mode brings its own `provides`) and adds only what
+is genuinely run-wide.
+
+A profile can also set `autostart`: the services and forwarded dependencies that
+come up on their own for that run. It is the whole set, overriding each thing's
+own `autostart`, so a profile both starts what it lists and leaves down what it
+does not.
+
+```yaml
+profiles:
+  - name: local-auth-stack
+    include: [console, identity, authorization]
+    autostart: [console, identity, authorization]
+```
+
+This is how one run brings up a local stack while the default run brings up the
+forwards it replaces: give the forwards `autostart: true` in the base, and the
+profile's `autostart` list, omitting them, leaves them down for its run.
 
 **What a profile lists are the roots, not the whole set.** Whatever they need
 comes with them: `depends_on`, transitively, and anything a `{{ reference }}`
@@ -416,5 +501,7 @@ The load itself rejects:
   modes with one name, or a `default` naming no mode
 - a profile `modes` entry naming something that is not a dependency, a dependency
   with a single source, or a mode that dependency does not have
+- a profile `autostart` entry naming something that is not a service or dependency
 - `depends_on` naming something that does not exist
-- a reference that does not resolve
+- a reference that does not resolve, in a `cmd`, an `env`, a mode's `provides`,
+  or a profile's `env`

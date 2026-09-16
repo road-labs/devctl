@@ -279,9 +279,12 @@ func Validate(file *config.File) error {
 		return nil
 	}
 	for _, svc := range file.Services {
-		values := make([]string, 0, 1+len(svc.Env))
+		values := make([]string, 0, 1+len(svc.Env)+len(svc.Provides))
 		values = append(values, svc.Cmd)
 		for _, v := range svc.Env {
+			values = append(values, v)
+		}
+		for _, v := range svc.Provides {
 			values = append(values, v)
 		}
 		if err := check("service "+svc.Name, values...); err != nil {
@@ -316,6 +319,24 @@ func Validate(file *config.File) error {
 		}
 		if err := check("task "+task.Name, values...); err != nil {
 			return err
+		}
+	}
+	// A mode's provides and a profile's env are handed to services, so their
+	// references must resolve like a service's own env.
+	for _, dep := range file.Dependencies {
+		for _, m := range dep.Modeset() {
+			for _, v := range m.Provides {
+				if err := check("dependency "+dep.Name+" provides", v); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, p := range file.Profiles {
+		for _, v := range p.Env {
+			if err := check("profile "+p.Name+" env", v); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

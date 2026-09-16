@@ -19,12 +19,14 @@ import (
 // A sibling on the same machine answers immediately or not at all.
 const dialTimeout = 300 * time.Millisecond
 
-// Snapshot is what a devctl publishes: its id and the port it allocated for
-// every service and port name, the same table services resolve each other
-// through. A consumer picks the service and port it peers with.
+// Snapshot is what a devctl publishes: its id, the port it allocated for every
+// service and port name, and the resolved config each service provides. A
+// consumer picks the service and port it peers with, and inherits that service's
+// provides.
 type Snapshot struct {
-	ID    string                    `json:"id"`
-	Ports map[string]map[string]int `json:"ports"`
+	ID       string                       `json:"id"`
+	Ports    map[string]map[string]int    `json:"ports"`
+	Provides map[string]map[string]string `json:"provides,omitempty"`
 }
 
 // Port returns the allocated number for a service's named port, or false when
@@ -32,6 +34,12 @@ type Snapshot struct {
 func (s Snapshot) Port(service, port string) (int, bool) {
 	n, ok := s.Ports[service][port]
 	return n, ok
+}
+
+// ProvidesFor is the config a service on the sibling hands its consumers, or nil
+// when it publishes none.
+func (s Snapshot) ProvidesFor(service string) map[string]string {
+	return s.Provides[service]
 }
 
 // dir is where sockets live: one directory under the system temp, per user

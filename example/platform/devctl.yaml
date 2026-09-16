@@ -15,6 +15,11 @@ services:
     autostart: true
     watch: [cmd/api]
     cmd: go run ./cmd/api
+    # Config the api hands its consumers. Published on this devctl's socket, so a
+    # sibling that peers with api inherits it, resolved. platform owns the value.
+    provides:
+      PLATFORM_SOURCE: the platform devctl next door
+      PLATFORM_API_URL: "{{ api.http.url }}"
 
   # A worker is a perfectly good service with no ports at all.
   - name: worker

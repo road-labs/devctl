@@ -39,9 +39,15 @@ declared listener before anything runs: a free default is kept, a taken one is
 replaced and reported, a `fixed` one that is taken refuses the run. Services
 bind them themselves, through the variable `listen` names.
 
-**A process is given the shell's environment, then its own listeners, then its
-declared `env`.** Later wins, so a value in the manifest overrides one the
-developer happened to have exported. Every `{{ reference }}` is resolved first.
+**A process is given the shell's environment, then its own listeners, then the
+`provides` of the dependencies it depends on, then its declared `env`, then the
+selected profile's `env`.** Later wins, so a service overrides what a dependency
+provides, and a profile overrides the service. Every `{{ reference }}` is
+resolved first. Two places carry env that is not a service's own: a dependency
+mode's `provides` (config that rides that mode, like an auth bundle that changes
+with the identity source) and a profile's `env` (config for the whole run, like
+a banner). Config that follows a dependency's mode goes in `provides`; config
+that belongs to the run goes in the profile.
 
 **`.env` is not loaded into the process.** This is the one people get wrong. It
 is read only to find the addresses of dependencies the machine provides, and
@@ -111,6 +117,14 @@ inventory.
   as `modes` with a `default`; `m` in the panel opens a picker to switch. When the
   everyday default is one developer's choice rather than the team's, set it in
   `devctl.mine.yaml`, which overlays the `default` without restating the modes.
+- **Does switching that source change more than the address?** Auth is the usual
+  case: the OIDC issuer URL and client id differ local vs staging, and they are a
+  function of which mode identity is in, not of the run. Put them on the mode as
+  `provides`, so they ride the mode and a consumer inherits them. Config that
+  belongs to the whole run instead, like an environment banner, goes in a
+  profile's `env`. When the value is owned by a sibling devctl you peer with, put
+  `provides` on that sibling's service instead: it publishes them over the socket
+  and the peer inherits them, so the owner states it once.
 - **Does another repository dial any of these by number?** Those ports are
   pinned and everything else is free to move. Getting this wrong either way
   hurts: pinning everything means a run refuses to start over a port nothing
@@ -127,7 +141,9 @@ inventory.
   need. Only worth declaring where a repository is big enough that nobody runs
   all of it. A profile can also set the starting `modes` of the dependencies it
   brings up, so "the UI against staging" is a profile that forwards what "the UI"
-  peers with.
+  peers with. And a profile's `autostart` is the set that comes up for that run,
+  overriding each thing's own: pair it with `autostart: true` on a forward to run
+  one thing forwarded by default and locally under a profile.
 - **Where should logs go?** Usually a gitignored `.devlogs` with a cap.
 
 ## 3. Write it
@@ -159,34 +175,37 @@ references carry other people's. Neither contains a number.
 ## 4. Wire it into how people already start things
 
 A manifest nobody knows how to run is a file nobody runs. If the repository
-root has a `Makefile`, a `Taskfile.yml` or a `justfile`, people type that, not
-`go tool devctl`, so finish the job there.
+root has a `Makefile`, a `Taskfile.yml` or a `justfile`, people type that, so
+finish the job there.
 
 **Check whether the name is free first.** Grep for a `dev` target. If there is
 one, do not touch it: say what it does today and ask what to call this instead,
 because a target somebody else's muscle memory depends on is not yours to
 repoint.
 
-**Match how devctl is installed**, which `go.mod` tells you:
-
-| In `go.mod` | The line |
-| --- | --- |
-| a `tool github.com/road-labs/devctl` directive | `go tool devctl` |
-| a `require` only | `go run github.com/road-labs/devctl` |
-| nothing | `devctl`, and say it needs installing |
+**Prefer the installed command.** devctl is meant to be installed on the
+developer's `PATH` (`go install github.com/road-labs/devctl@latest`), which is
+what makes `devctl` a plain command and what shell completion needs. So the line
+is just `devctl`, and the README says to install it once:
 
 ```make
 .PHONY: dev
 dev:
-	go tool devctl
+	devctl
 ```
 
 ```yaml
   dev:
     desc: Run the services locally
     cmds:
-      - go tool devctl
+      - devctl
 ```
+
+If a repository has instead pinned it as a tool (a `tool github.com/road-labs/devctl`
+directive in `go.mod`), the line is `go tool devctl`, and `go run
+github.com/road-labs/devctl` works from a bare `require`. Both skip the install
+but neither is on the `PATH`, so completion will not hook them; prefer the
+installed command unless the repository has clearly chosen otherwise.
 
 Then say the sentence the README section this replaces used to say: `make dev`,
 or `task dev`. That is the whole point of the exercise.
@@ -220,6 +239,14 @@ or `task dev`. That is the whole point of the exercise.
   developer points a dependency at day to day is personal. Put that `default` in
   the committed manifest and it forces one arrangement on everyone; it belongs in
   `devctl.mine.yaml`.
+- **Mode-tied config put on the profile.** If a value is a function of a
+  dependency's mode, like an auth client id that differs local vs staging, it
+  belongs in that mode's `provides`. Putting it in a profile's `env` repeats it
+  in every profile that shares the mode and lets a profile contradict the mode it
+  chose. The profile's `env` is only for what belongs to the run.
+- **The same value inline on a service and in a mode's `provides`.** The service
+  wins, so the mode's value never takes effect and switching does nothing. If
+  `provides` owns a variable, take it off the service.
 
 ## Verify
 

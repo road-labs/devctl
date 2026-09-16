@@ -43,6 +43,10 @@ profiles:
     include: [storefront]
     modes:
       inventory: staging
+    # Run-level config for this profile, over every service's own env. Belongs to
+    # the run, not to any one dependency.
+    env:
+      SHOP_ENV: staging
 
 dependencies:
   # Provided by the machine. Its address comes from the environment or .env,
@@ -73,11 +77,17 @@ dependencies:
     description: Stock levels, local from the warehouse devctl or forwarded from staging
     default: local
     modes:
+      # provides is config that rides the mode: a service depending on inventory
+      # is handed STOCK_SOURCE, and switching the mode swaps it with the address.
       - name: local
         peer: {id: warehouse, service: stock, port: grpc}
+        provides:
+          STOCK_SOURCE: local
       - name: staging
         port: 7110
         forward: {cmd: "kubectl -n shop port-forward svc/stock {{ inventory.port.number }}:8080"}
+        provides:
+          STOCK_SOURCE: staging
 
 services:
   # Several listeners, one of them pinned. Anything reached by number from

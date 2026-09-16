@@ -115,6 +115,59 @@ func TestModePickerRefusesASingleSource(t *testing.T) {
 	assert.Contains(t, m.message, "single source")
 }
 
+// A service is handed the config its dependency's active mode provides, and
+// switching the mode swaps that config along with the address.
+func TestServiceInheritsModeProvides(t *testing.T) {
+	m := model(t, 140, 50)
+	m.expand.Values["db.address"] = "postgres://localhost:5432/shop"
+
+	cat := m.byName["catalogue"] // depends_on inventory
+	env, err := m.envFor(cat)
+	require.NoError(t, err)
+	assert.Equal(t, "local", env["STOCK_SOURCE"], "inherited from inventory's default mode")
+
+	m.chooseMode(m.byName["inventory"], "staging")
+	env, err = m.envFor(cat)
+	require.NoError(t, err)
+	assert.Equal(t, "staging", env["STOCK_SOURCE"], "switching the mode swaps the provided config")
+}
+
+// A service's own env wins over what a dependency provides, so a provided value
+// is a default the service can still set for itself.
+func TestServiceEnvOverridesProvides(t *testing.T) {
+	m := model(t, 140, 50)
+	m.expand.Values["db.address"] = "postgres://localhost:5432/shop"
+	cat := m.byName["catalogue"]
+	cat.cfg.Env["STOCK_SOURCE"] = "pinned"
+
+	env, err := m.envFor(cat)
+	require.NoError(t, err)
+	assert.Equal(t, "pinned", env["STOCK_SOURCE"], "the service's own env beats the provided default")
+}
+
+// A peered dependency inherits the config the sibling service publishes, and the
+// mode's own provides win over it.
+func TestPeerPublishedProvidesInherited(t *testing.T) {
+	closer, err := peer.Serve(peer.Snapshot{
+		ID:       "warehouse",
+		Ports:    map[string]map[string]int{"stock": {"grpc": 24999}},
+		Provides: map[string]map[string]string{"stock": {"WAREHOUSE_REGION": "eu", "STOCK_SOURCE": "remote"}},
+	})
+	require.NoError(t, err)
+	defer closer.Close()
+
+	m := model(t, 140, 50)
+	m.expand.Values["db.address"] = "postgres://localhost:5432/shop"
+	inv := m.byName["inventory"]
+	m.readPeer(inv)
+	m.applyMode(inv)
+
+	env, err := m.envFor(m.byName["catalogue"])
+	require.NoError(t, err)
+	assert.Equal(t, "eu", env["WAREHOUSE_REGION"], "inherited from the peered service's published config")
+	assert.Equal(t, "local", env["STOCK_SOURCE"], "the mode's own provides win over the published base")
+}
+
 // A peered dependency waits for its sibling and picks it up when it appears,
 // the same way a service follows a port allocated at start.
 func TestPeerRowResolvesWhenSiblingAppears(t *testing.T) {

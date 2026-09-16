@@ -14,6 +14,9 @@ profiles:
     include: [billing]
     modes:
       platform: mock
+    # Run-level env for this launch, over the service's own.
+    env:
+      BILLING_BANNER: running against the mock
 
 dependencies:
   - name: platform
@@ -21,14 +24,19 @@ dependencies:
     default: local
     modes:
       # Read the api port straight from the platform devctl. Run that project and
-      # this row goes from "waiting" to "peered" on its own.
+      # this row goes from "waiting" to "peered" on its own. No provides here: the
+      # platform api publishes PLATFORM_SOURCE, and peering inherits it, so the
+      # value is stated once, by the thing that owns it.
       - name: local
         peer: {id: platform, service: api, port: http}
       # No platform devctl needed: press s on this row to start a local mock on
-      # the forwarded port, and billing talks to that instead.
+      # the forwarded port. Nothing to inherit, so this mode states PLATFORM_SOURCE
+      # itself, config that rides the mode.
       - name: mock
         port: 8199
         forward: {cmd: "go run ./cmd/mockapi {{ platform.port.number }}"}
+        provides:
+          PLATFORM_SOURCE: a local mock
 
 services:
   - name: billing

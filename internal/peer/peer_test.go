@@ -20,9 +20,11 @@ func id(t *testing.T) string {
 
 func TestServeReadRoundTrip(t *testing.T) {
 	name := id(t)
-	closer, err := Serve(Snapshot{ID: name, Ports: map[string]map[string]int{
-		"stock": {"grpc": 24999, "http": 24998},
-	}})
+	closer, err := Serve(Snapshot{
+		ID:       name,
+		Ports:    map[string]map[string]int{"stock": {"grpc": 24999, "http": 24998}},
+		Provides: map[string]map[string]string{"stock": {"WAREHOUSE_REGION": "eu"}},
+	})
 	require.NoError(t, err)
 	defer closer.Close()
 
@@ -34,6 +36,10 @@ func TestServeReadRoundTrip(t *testing.T) {
 	port, ok := snap.Port("stock", "grpc")
 	require.True(t, ok)
 	assert.Equal(t, 24999, port, "the reader follows the number the sibling actually got")
+
+	assert.Equal(t, map[string]string{"WAREHOUSE_REGION": "eu"}, snap.ProvidesFor("stock"),
+		"a peered service's published config comes across too")
+	assert.Nil(t, snap.ProvidesFor("nothing"), "a service that publishes none has none")
 
 	_, ok = snap.Port("stock", "nope")
 	assert.False(t, ok, "an unknown listener is reported as absent, not zero")

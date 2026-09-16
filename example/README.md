@@ -58,6 +58,14 @@ cd example/billing && devctl mock
 Now the `platform` row comes up on `mock` from the start; press `s` to run the
 mock server. A profile sets not just what runs but how it is wired.
 
+Watch billing's log (`l` on its row): it prints `source: a local mock` vs
+`source: the platform devctl next door`. In `local` mode that `PLATFORM_SOURCE`
+is not in billing's manifest at all: the platform `api` service publishes it
+(its `provides`), and peering inherits it over the socket, so platform states it
+once. In `mock` mode there is no sibling, so that mode states `PLATFORM_SOURCE`
+itself. The `mock` profile also sets a `BILLING_BANNER`, run-level env that
+belongs to the launch rather than to the dependency.
+
 ## What each feature looks like here
 
 - **id + peer** — `platform/devctl.yaml` sets `id: platform`;

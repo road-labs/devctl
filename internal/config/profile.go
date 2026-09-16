@@ -26,6 +26,9 @@ func (f *File) Select(targets []string) (*File, error) {
 	// dependency, gathered here and applied to the selection below.
 	roots := map[string]bool{}
 	overrides := map[string]string{}
+	runEnv := map[string]string{}
+	autostart := map[string]bool{}
+	setsAutostart := false
 	var expand func(name string, seen map[string]bool) error
 	expand = func(name string, seen map[string]bool) error {
 		if seen[name] {
@@ -38,6 +41,15 @@ func (f *File) Select(targets []string) (*File, error) {
 					return fmt.Errorf("selected profiles set %q to both %q and %q", dep, prev, mode)
 				}
 				overrides[dep] = mode
+			}
+			for k, v := range p.Env {
+				runEnv[k] = v
+			}
+			if p.Autostart != nil {
+				setsAutostart = true
+				for _, n := range p.Autostart {
+					autostart[n] = true
+				}
 			}
 			for _, inc := range p.Include {
 				if err := expand(inc, seen); err != nil {
@@ -95,15 +107,23 @@ func (f *File) Select(targets []string) (*File, error) {
 		if mode, ok := overrides[d.Name]; ok {
 			d.Default = mode
 		}
+		if setsAutostart {
+			d.Autostart = autostart[d.Name]
+		}
 		out.Dependencies = append(out.Dependencies, d)
 	}
 	for _, s := range f.Services {
 		if want[s.Name] {
+			s.Env = withRunEnv(s.Env, runEnv)
+			if setsAutostart {
+				s.Autostart = autostart[s.Name]
+			}
 			out.Services = append(out.Services, s)
 		}
 	}
 	for _, t := range f.Tasks {
 		if want[t.Name] {
+			t.Env = withRunEnv(t.Env, runEnv)
 			out.Tasks = append(out.Tasks, t)
 		}
 	}
@@ -111,6 +131,44 @@ func (f *File) Select(targets []string) (*File, error) {
 		return nil, fmt.Errorf("%s selects nothing", strings.Join(targets, ", "))
 	}
 	return &out, nil
+}
+
+// withRunEnv layers a profile's run env over a service or task's own env: the
+// run wins, since it is the deliberate choice for this launch. A fresh map, so
+// the shared manifest is left alone. When there is no run env the original map
+// is kept as is.
+func withRunEnv(own, run map[string]string) map[string]string {
+	if len(run) == 0 {
+		return own
+	}
+	merged := make(map[string]string, len(own)+len(run))
+	for k, v := range own {
+		merged[k] = v
+	}
+	for k, v := range run {
+		merged[k] = v
+	}
+	return merged
+}
+
+// Targets is everything `devctl <name>` accepts: the profiles, and every single
+// service, task and dependency. Shell completion lists these.
+func (f *File) Targets() []string {
+	var out []string
+	for _, p := range f.Profiles {
+		out = append(out, p.Name)
+	}
+	for _, d := range f.Dependencies {
+		out = append(out, d.Name)
+	}
+	for _, s := range f.Services {
+		out = append(out, s.Name)
+	}
+	for _, t := range f.Tasks {
+		out = append(out, t.Name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // validateProfiles checks the names and what they point at. A profile shares the
@@ -146,8 +204,23 @@ func (f *File) validateProfiles(claim func(name, what string) error) error {
 				return fmt.Errorf("profile %q sets %q to mode %q, which it does not have", p.Name, depName, modeName)
 			}
 		}
+		for _, n := range p.Autostart {
+			if !f.hasService(n) && f.dependency(n) == nil {
+				return fmt.Errorf("profile %q autostarts %q, which is not a service or dependency", p.Name, n)
+			}
+		}
 	}
 	return nil
+}
+
+// hasService reports whether a service of this name is declared.
+func (f *File) hasService(name string) bool {
+	for _, s := range f.Services {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // dependency returns the dependency with this name, or nil.

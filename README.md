@@ -4,11 +4,12 @@ Run a repository's services locally from one panel: each on its own ports, with
 its status, its logs, its dependencies and a key to restart it. Everything
 devctl knows comes from one file at the root of your repository, `devctl.yaml`.
 
-It is a terminal panel, not a daemon. Nothing is installed, no state is kept
-between runs, and quitting stops everything it started.
+It is a terminal panel, not a daemon. No state is kept between runs, and quitting
+stops everything it started.
 
 ```
-go tool devctl
+go install github.com/road-labs/devctl@latest
+devctl
 ```
 
 ## Why
@@ -24,22 +25,20 @@ allocated once so two things cannot silently fight over one number.
 
 ## Install
 
-devctl is a Go program, so the usual ways all work. As a pinned tool of the
-repository it serves, which is what most projects want:
-
-```
-go get -tool github.com/road-labs/devctl@latest
-go tool devctl
-```
-
-Or standalone:
+Install it once and it is on your `PATH`, which is what makes `devctl` a plain
+command in every repository, and what shell completion needs:
 
 ```
 go install github.com/road-labs/devctl@latest
+devctl
 ```
 
-`go.mod` declares Go 1.27.1, so that is what building it needs. `go tool`
-itself arrived in 1.24.
+`go.mod` declares Go 1.27.1, so that is what building it needs.
+
+You can pin it as a tool of a single repository instead, with
+`go get -tool github.com/road-labs/devctl@latest` and `go tool devctl`, but then
+it is not on your `PATH` and completion cannot hook it, so the plain install is
+the recommendation.
 
 ## The manifest
 
@@ -195,6 +194,27 @@ start; `devctl.mine.yaml` can set a different one per machine, since which sourc
 a developer uses day to day is their own business. Whatever reads the dependency
 refers to it as `{{ platform.address }}`, which follows whichever mode is live.
 
+Some config comes *with* a mode rather than being an address, an auth bundle that
+differs local vs staging, say. Put it on the mode as `provides`, and every
+service that depends on the dependency is handed it, swapped when the mode
+switches:
+
+```yaml
+  - name: identity
+    default: staging
+    modes:
+      - name: local
+        peer: {id: platform, service: identity, port: grpc}
+        provides: {OIDC_PROVIDER_URL: http://localhost:24700/, OIDC_CLIENT_ID: finance}
+      - name: staging
+        port: 9490
+        forward: {cmd: "kubectl ... svc/identity {{ identity.port.number }}:9090"}
+        provides: {OIDC_PROVIDER_URL: https://id.public.road.dev/, OIDC_CLIENT_ID: d99d247a-...}
+```
+
+One `m` on the identity row flips the address and the bundle together. A service
+can still override a provided value in its own `env`.
+
 ## Peering devctls together
 
 Give a devctl an `id` and it publishes its allocated ports for its siblings:
@@ -210,6 +230,11 @@ removed when devctl quits. Start order does not matter: a devctl that peers with
 sibling not yet running shows `waiting`, and picks it up the moment it comes up.
 Two devctls cannot share one id; the second refuses to start, which catches a
 stray copy.
+
+A published devctl also carries the config its services `provides`, so a peer
+inherits it. If `platform`'s identity service publishes the OIDC issuer and
+client id, `billing` peering that service gets them without restating anything.
+The service that owns a value states it once; everyone downstream reads it live.
 
 ## Running part of it
 
@@ -251,6 +276,21 @@ profiles:
 
 `devctl ui-staging` runs the UI and starts `platform` forwarded rather than in
 its default mode. `m` still switches at runtime; this only sets where it starts.
+
+A profile picks each dependency's mode independently and can add `env` for the
+run, so "auth against staging, data local" is one profile:
+
+```yaml
+profiles:
+  - name: dev
+    include: [ui]
+    modes: {identity: staging, billing: local, pricing: local}
+    env:   {APP_ENVIRONMENT: local}
+```
+
+The auth bundle comes with identity's `staging` mode (its `provides`), so it is
+written once and every run that chooses that mode inherits it. The profile's
+`env` is for config that belongs to the run rather than to one dependency.
 
 ## Your machine is not everyone's
 
@@ -397,6 +437,28 @@ devctl -manifest path/to/devctl.yaml
 ```
 
 Points at a manifest explicitly, rather than walking up to find one.
+
+## Completion
+
+`devctl <TAB>` completes the run targets, the profiles and every single service,
+task and dependency, read from the manifest in the current directory. It follows
+you between repositories, since it reads whichever manifest you are standing in.
+
+Load it for your shell (needs `devctl` on your `PATH`, so `go install` it):
+
+```
+# bash, in ~/.bashrc
+source <(devctl -completion bash)
+
+# zsh, in ~/.zshrc (after compinit)
+source <(devctl -completion zsh)
+
+# fish
+devctl -completion fish > ~/.config/fish/completions/devctl.fish
+```
+
+Each script asks `devctl -complete` for the target list, so a new profile shows
+up the moment it is in the manifest, with nothing to regenerate.
 
 ## Licence
 

@@ -97,6 +97,16 @@ func (m Model) describeBody() string {
 			}
 			field("probe", probe)
 		}
+		// What this mode hands to the services that depend on it. It rides the
+		// mode, so switching swaps the whole set.
+		if len(mode.Provides) > 0 {
+			keys := make([]string, 0, len(mode.Provides))
+			for k := range mode.Provides {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			field("provides", strings.Join(keys, "  "))
+		}
 		if r.dep.Optional {
 			field("optional", "yes, an unreachable one only warns")
 		}
@@ -127,6 +137,15 @@ func (m Model) describeBody() string {
 	}
 	if r.cfg.Autostart {
 		field("autostart", "yes, started when devctl starts")
+	}
+	// What this service hands its consumers, local or peered from another devctl.
+	if len(r.cfg.Provides) > 0 {
+		keys := make([]string, 0, len(r.cfg.Provides))
+		for k := range r.cfg.Provides {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		field("publishes", strings.Join(keys, "  "))
 	}
 	// Where to look once devctl is gone, which is the whole point of writing it
 	// to disk: the ring in memory dies with the panel.

@@ -119,6 +119,20 @@ func TestValidateCatchesManifestMistakes(t *testing.T) {
 		Cmd: "x", Env: map[string]string{"DEP": "{{ b.grpc }}"},
 	}}}
 	assert.Error(t, Validate(badRef))
+
+	// A mode's provides and a profile's env are handed to services, so an
+	// unresolved reference in either is caught at load too.
+	badProvides := &config.File{
+		Dependencies: []config.Dependency{{Name: "d", Peer: &config.Peer{ID: "x", Service: "s", Port: "p"}, Provides: map[string]string{"V": "{{ ghost.grpc }}"}}},
+		Services:     []config.Service{{Name: "a", Cmd: "x"}},
+	}
+	assert.Error(t, Validate(badProvides), "a bad reference in provides")
+
+	badProfileEnv := &config.File{
+		Profiles: []config.Profile{{Name: "p", Include: []string{"a"}, Env: map[string]string{"V": "{{ ghost.grpc }}"}}},
+		Services: []config.Service{{Name: "a", Cmd: "x"}},
+	}
+	assert.Error(t, Validate(badProfileEnv), "a bad reference in a profile's env")
 }
 
 func TestIsFreeAndPickFreeAgree(t *testing.T) {

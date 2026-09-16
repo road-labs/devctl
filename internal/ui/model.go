@@ -78,12 +78,15 @@ type Model struct {
 	// peerPort is the sibling port devctl last read for each dependency whose
 	// active mode peers to another devctl, 0 while that sibling is not running.
 	peerPort map[string]int
-	rows     []*row
-	byName   map[string]*row
-	cursor   int
-	width    int
-	height   int
-	message  string
+	// peerProvides is the config the peered service published, per dependency,
+	// inherited by whatever depends on it.
+	peerProvides map[string]map[string]string
+	rows         []*row
+	byName       map[string]*row
+	cursor       int
+	width        int
+	height       int
+	message      string
 
 	// The full-screen log view: every process's output merged in the order
 	// it arrived, or one process's, scrollable, following the tail until
@@ -104,7 +107,7 @@ type Model struct {
 // New builds the model from the manifest, the allocated port table and the
 // resolved dependency addresses.
 func New(root string, file *config.File, table ports.Table, values ports.Values, warnings []string) Model {
-	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, peerPort: map[string]int{}, byName: map[string]*row{}, follow: true, logs: file.Logs}
+	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, peerPort: map[string]int{}, peerProvides: map[string]map[string]string{}, byName: map[string]*row{}, follow: true, logs: file.Logs}
 	// Load has already refused an unparseable size, so this cannot fail here.
 	m.logBytes, _ = file.Logs.Bytes()
 	m.viewport = viewport.New(80, 20)
@@ -127,7 +130,7 @@ func New(root string, file *config.File, table ports.Table, values ports.Values,
 	}
 	for i := range file.Dependencies {
 		dep := &file.Dependencies[i]
-		r := &row{dep: dep, cfg: config.Service{Name: dep.Name, Description: dep.Description}, activeModeName: dep.DefaultMode()}
+		r := &row{dep: dep, cfg: config.Service{Name: dep.Name, Description: dep.Description, Autostart: dep.Autostart}, activeModeName: dep.DefaultMode()}
 		add(r)
 		// A dependency peered with a sibling is read now, so a sibling already up
 		// shows as peered from the first frame rather than after the first probe.
@@ -212,12 +215,15 @@ func (m *Model) readPeer(r *row) {
 		return
 	}
 	port := 0
+	var provides map[string]string
 	if snap, running, _ := peer.Read(mode.Peer.ID); running {
 		if p, ok := snap.Port(mode.Peer.Service, mode.Peer.Port); ok {
 			port = p
 		}
+		provides = snap.ProvidesFor(mode.Peer.Service)
 	}
 	m.peerPort[r.dep.Name] = port
+	m.peerProvides[r.dep.Name] = provides
 }
 
 // chooseMode makes name the active mode of a dependency and restarts the running
@@ -296,7 +302,14 @@ type tickMsg time.Time
 type probeMsg struct {
 	ports map[string]map[int]bool
 	deps  map[string]bool
-	peers map[string]int
+	peers map[string]peerRead
+}
+
+// peerRead is what one turn of the probe learned from a sibling: the port it
+// publishes for the peered listener, and the config that service provides.
+type peerRead struct {
+	port     int
+	provides map[string]string
 }
 
 // changedMsg says a watched service's source changed.
@@ -354,15 +367,16 @@ func (m Model) probe() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
-		results := probeMsg{ports: map[string]map[int]bool{}, deps: map[string]bool{}, peers: map[string]int{}}
+		results := probeMsg{ports: map[string]map[int]bool{}, deps: map[string]bool{}, peers: map[string]peerRead{}}
 		for _, lt := range peers {
-			port := 0
+			var read peerRead
 			if snap, running, _ := peer.Read(lt.id); running {
 				if p, ok := snap.Port(lt.service, lt.port); ok {
-					port = p
+					read.port = p
 				}
+				read.provides = snap.ProvidesFor(lt.service)
 			}
-			results.peers[lt.dep] = port
+			results.peers[lt.dep] = read
 		}
 		var mu sync.Mutex
 		var wg sync.WaitGroup
@@ -435,14 +449,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// A peered sibling that has come up, gone away, or moved its port: apply
 		// the new number so consumers follow it, exactly as they would a port
-		// allocated at start.
-		for name, port := range msg.peers {
-			if m.peerPort[name] != port {
-				m.peerPort[name] = port
+		// allocated at start. The provided config is refreshed alongside.
+		for name, read := range msg.peers {
+			if m.peerPort[name] != read.port {
+				m.peerPort[name] = read.port
 				if r, ok := m.byName[name]; ok {
 					m.applyMode(r)
 				}
 			}
+			m.peerProvides[name] = read.provides
 		}
 		return m, nil
 	case Shutdown:
@@ -806,6 +821,30 @@ func (m Model) envFor(r *row) (map[string]string, error) {
 	env := map[string]string{}
 	for name, listen := range r.cfg.Listen {
 		env[listen.Env] = ports.Listen(m.expand.Ports[r.cfg.Name][name], listen.Format)
+	}
+	// What each dependency's active mode provides, for the dependencies this row
+	// declares. Config that rides a mode: switch the mode and this swaps with it.
+	// The row's own env comes after, so a service can still override a value.
+	for _, depName := range r.cfg.DependsOn {
+		d, ok := m.byName[depName]
+		if !ok || d.dep == nil {
+			continue
+		}
+		mode := d.mode()
+		// What a peered sibling published for this service, already resolved on its
+		// side. The base; the mode's own provides override it below.
+		if mode.Peered() {
+			for k, v := range m.peerProvides[depName] {
+				env[k] = v
+			}
+		}
+		for k, v := range mode.Provides {
+			expanded, err := m.expand.Expand(v)
+			if err != nil {
+				return nil, err
+			}
+			env[k] = expanded
+		}
 	}
 	for k, v := range r.cfg.Env {
 		expanded, err := m.expand.Expand(v)

@@ -96,6 +96,11 @@ type Service struct {
 	// Env is extra environment; values may reference ports as {{ svc.port }}
 	// and dependencies as {{ dep.address }} or {{ dep.port }}.
 	Env map[string]string `yaml:"env"`
+	// Provides is config this service hands whatever consumes it, resolved and
+	// published on this devctl's socket. A sibling devctl that peers this service
+	// inherits it, so the service that owns a value states it once. Values may
+	// contain references.
+	Provides map[string]string `yaml:"provides"`
 	// Watch lists directories, relative to the repository root, whose Go
 	// source changes restart the service. Empty means no auto-restart.
 	Watch []string `yaml:"watch"`
@@ -133,6 +138,14 @@ type Dependency struct {
 	Forward *Forward `yaml:"forward"`
 	// Peer describes a dependency read from a sibling devctl.
 	Peer *Peer `yaml:"peer"`
+	// Autostart opens a forwarded dependency's tunnel when devctl starts, rather
+	// than waiting for s. For a dependency the run cannot work without, like an
+	// auth backend forwarded from staging. Ignored for a machine-provided source.
+	Autostart bool `yaml:"autostart"`
+	// Provides is environment the dependency hands to the services that depend on
+	// it: config that comes with this way of providing it, not an address. A
+	// service inheriting it can still override a value in its own env.
+	Provides map[string]string `yaml:"provides"`
 	// Modes are the several sources a dependency can be satisfied by, one active
 	// at a time. Default names the one active at start. A dependency with modes
 	// is referenced only as {{ name.address }}, which resolves to a dialable
@@ -143,14 +156,17 @@ type Dependency struct {
 
 // Mode is one named source of a multi-source dependency: the same three kinds a
 // single-source dependency has, given a name so it can be chosen and switched.
+// Provides is env that rides this mode, applied to the dependency's consumers
+// when it is live, so switching the mode swaps the config with the address.
 type Mode struct {
-	Name    string   `yaml:"name"`
-	Env     string   `yaml:"env"`
-	Example string   `yaml:"example"`
-	Kind    string   `yaml:"kind"`
-	Port    int      `yaml:"port"`
-	Forward *Forward `yaml:"forward"`
-	Peer    *Peer    `yaml:"peer"`
+	Name     string            `yaml:"name"`
+	Env      string            `yaml:"env"`
+	Example  string            `yaml:"example"`
+	Kind     string            `yaml:"kind"`
+	Port     int               `yaml:"port"`
+	Forward  *Forward          `yaml:"forward"`
+	Peer     *Peer             `yaml:"peer"`
+	Provides map[string]string `yaml:"provides"`
 }
 
 // Peer points at one listener of another devctl on this machine, by that
@@ -190,7 +206,7 @@ func (d Dependency) Modeset() []Mode {
 	if len(d.Modes) > 0 {
 		return d.Modes
 	}
-	return []Mode{{Env: d.Env, Example: d.Example, Kind: d.Kind, Port: d.Port, Forward: d.Forward, Peer: d.Peer}}
+	return []Mode{{Env: d.Env, Example: d.Example, Kind: d.Kind, Port: d.Port, Forward: d.Forward, Peer: d.Peer, Provides: d.Provides}}
 }
 
 // DefaultMode names the mode live at start: Default when set, else the first
@@ -286,6 +302,16 @@ type Profile struct {
 	// forwarded rather than in whatever it defaults to. A named starting
 	// configuration, not a lock: m still switches at runtime.
 	Modes map[string]string `yaml:"modes"`
+	// Env is run-level environment for this profile: config that belongs to the
+	// run rather than to any one dependency, applied to every service and task in
+	// it, over their own env. Config that follows a dependency's mode belongs in
+	// that mode's provides instead.
+	Env map[string]string `yaml:"env"`
+	// Autostart, when set, is the definitive set of services and forwarded
+	// dependencies that come up on their own for this run, overriding each one's
+	// own autostart. It names what to start; everything else waits for s. Use it
+	// where the same things are wanted up in one run and down in another.
+	Autostart []string `yaml:"autostart"`
 }
 
 // Logs configures on-disk output. Without it devctl keeps the last 2000 lines

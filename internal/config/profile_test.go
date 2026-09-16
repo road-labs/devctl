@@ -106,6 +106,94 @@ func TestSelectProfileSetsDependencyMode(t *testing.T) {
 		"the manifest default is untouched")
 }
 
+// Targets is what shell completion offers: profiles and every single service,
+// task and dependency, so `devctl <TAB>` lists them all.
+func TestTargets(t *testing.T) {
+	got := fixture(t).Targets()
+	for _, want := range []string{"storefront-only", "storefront-staging", "catalogue", "db", "inventory", "seed"} {
+		assert.Contains(t, got, want)
+	}
+	assert.IsIncreasing(t, got, "sorted, so completion lists them in order")
+}
+
+// A profile carries run-level env, applied to the run's services over their own.
+func TestSelectProfileAppliesRunEnv(t *testing.T) {
+	f := fixture(t)
+	got, err := f.Select([]string{"storefront-staging"})
+	require.NoError(t, err)
+
+	var storefront *Service
+	for i := range got.Services {
+		if got.Services[i].Name == "storefront" {
+			storefront = &got.Services[i]
+		}
+	}
+	require.NotNil(t, storefront)
+	assert.Equal(t, "staging", storefront.Env["SHOP_ENV"], "the profile's env lands on the run's services")
+	assert.Equal(t, "{{ catalogue.http.url }}", storefront.Env["CATALOGUE_URL"], "its own env survives")
+
+	for _, s := range f.Services {
+		if s.Name == "storefront" {
+			_, has := s.Env["SHOP_ENV"]
+			assert.False(t, has, "the shared manifest is left untouched")
+		}
+	}
+}
+
+// The profile's env wins over a service's own value: it is the deliberate choice
+// for this launch.
+func TestProfileEnvWinsOverServiceEnv(t *testing.T) {
+	body := "profiles:\n  - name: p\n    include: [a]\n    env: {LEVEL: run}\nservices:\n  - name: a\n    cmd: x\n    env: {LEVEL: service}\n"
+	path := filepath.Join(t.TempDir(), "devctl.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	f, err := Load(path)
+	require.NoError(t, err)
+
+	got, err := f.Select([]string{"p"})
+	require.NoError(t, err)
+	assert.Equal(t, "run", got.Services[0].Env["LEVEL"], "the run's choice beats the service default")
+}
+
+// A profile's autostart is the definitive set for its run: it turns things on,
+// and turns off anything that autostarts by default but is not listed.
+func TestProfileAutostartOverridesTheRun(t *testing.T) {
+	body := "profiles:\n  - name: p\n    include: [a, b]\n    autostart: [a]\nservices:\n  - name: a\n    cmd: x\n  - name: b\n    cmd: y\n    autostart: true\n"
+	path := filepath.Join(t.TempDir(), "devctl.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	f, err := Load(path)
+	require.NoError(t, err)
+
+	svc := func(file *File, name string) Service {
+		for _, s := range file.Services {
+			if s.Name == name {
+				return s
+			}
+		}
+		t.Fatalf("%s missing", name)
+		return Service{}
+	}
+
+	base, err := f.Select(nil)
+	require.NoError(t, err)
+	assert.True(t, svc(base, "b").Autostart, "its own flag holds without a profile")
+	assert.False(t, svc(base, "a").Autostart)
+
+	run, err := f.Select([]string{"p"})
+	require.NoError(t, err)
+	assert.True(t, svc(run, "a").Autostart, "listed, so it starts")
+	assert.False(t, svc(run, "b").Autostart, "not listed, so it does not, even though it autostarts by default")
+}
+
+// A profile that autostarts something that is not a service or dependency is
+// caught at load.
+func TestProfileAutostartValidation(t *testing.T) {
+	body := "profiles:\n  - name: p\n    include: [a]\n    autostart: [ghost]\nservices:\n  - name: a\n    cmd: x\n"
+	path := filepath.Join(t.TempDir(), "devctl.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	_, err := Load(path)
+	assert.Error(t, err)
+}
+
 // A profile that names a mode a dependency does not have is caught at load.
 func TestProfileModeValidation(t *testing.T) {
 	write := func(t *testing.T, body string) string {
