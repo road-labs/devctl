@@ -125,7 +125,9 @@ inventory.
   is usually a sentence someone already says out loud: "the fraud console and
   what it reads", "just the API". List the roots; devctl pulls in what they
   need. Only worth declaring where a repository is big enough that nobody runs
-  all of it.
+  all of it. A profile can also set the starting `modes` of the dependencies it
+  brings up, so "the UI against staging" is a profile that forwards what "the UI"
+  peers with.
 - **Where should logs go?** Usually a gitignored `.devlogs` with a cap.
 
 ## 3. Write it

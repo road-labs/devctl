@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -81,6 +82,48 @@ func TestSelectFollowsReferencesNotJustDependsOn(t *testing.T) {
 	got, err := f.Select([]string{"mailer"})
 	require.NoError(t, err)
 	assert.Contains(t, names(got), "catalogue", "pulled in by the reference alone")
+}
+
+// A profile sets not just what runs but how a dependency is wired: selecting it
+// makes the chosen mode the dependency's default, so the run starts in it.
+func TestSelectProfileSetsDependencyMode(t *testing.T) {
+	f := fixture(t)
+
+	// Without the profile, inventory starts on its manifest default.
+	base, err := f.Select([]string{"storefront-only"})
+	require.NoError(t, err)
+	assert.Equal(t, "local", base.dependency("inventory").DefaultMode())
+
+	// The staging profile runs the same things but starts inventory forwarded.
+	staged, err := f.Select([]string{"storefront-staging"})
+	require.NoError(t, err)
+	assert.Contains(t, names(staged), "storefront", "it still runs the storefront")
+	assert.Equal(t, "staging", staged.dependency("inventory").DefaultMode(),
+		"the profile chose the mode the run starts in")
+
+	// The override is on the selection, not the shared manifest.
+	assert.Equal(t, "local", f.dependency("inventory").DefaultMode(),
+		"the manifest default is untouched")
+}
+
+// A profile that names a mode a dependency does not have is caught at load.
+func TestProfileModeValidation(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "devctl.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		return path
+	}
+	for name, body := range map[string]string{
+		"unknown dependency": "profiles:\n  - name: p\n    include: [a]\n    modes: {ghost: x}\nservices:\n  - name: a\n    cmd: x\n",
+		"single source":      "dependencies:\n  - name: db\n    env: X\nprofiles:\n  - name: p\n    include: [a]\n    modes: {db: staging}\nservices:\n  - name: a\n    cmd: x\n",
+		"unknown mode":       "dependencies:\n  - name: d\n    modes:\n      - {name: local, env: X}\nprofiles:\n  - name: p\n    include: [a]\n    modes: {d: nope}\nservices:\n  - name: a\n    cmd: x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(write(t, body))
+			assert.Error(t, err)
+		})
+	}
 }
 
 // An unknown target says what it could have been, since the answer is a list

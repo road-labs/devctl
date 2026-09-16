@@ -281,6 +281,11 @@ type Profile struct {
 	Description string `yaml:"description"`
 	// Include names services, tasks, dependencies, or other profiles.
 	Include []string `yaml:"include"`
+	// Modes sets the starting mode of multi-mode dependencies, by name, when this
+	// profile is selected: {platform: staging} runs the platform dependency
+	// forwarded rather than in whatever it defaults to. A named starting
+	// configuration, not a lock: m still switches at runtime.
+	Modes map[string]string `yaml:"modes"`
 }
 
 // Logs configures on-disk output. Without it devctl keeps the last 2000 lines

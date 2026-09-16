@@ -241,12 +241,35 @@ profiles:
 | `name` | string | Unique across services, tasks, dependencies and other profiles. |
 | `description` | string | What the subset is for. |
 | `include` | list | Services, tasks, dependencies, or other profiles. |
+| `modes` | map | Starting mode per multi-mode dependency, see below. |
 
 ```
 devctl fraud        # the profile
 devctl fraud-ui     # any single name works too, without declaring a profile
 devctl              # everything, as before
 ```
+
+### Modes: how a profile wires its dependencies
+
+A profile can say not just what runs but how a dependency is wired, by naming a
+[mode](#several-sources-modes) for it. This is the difference between "run the
+UI" and "run the UI against forwarded staging rather than the local services":
+
+```yaml
+profiles:
+  - name: ui-staging
+    description: The UI, with the platform API forwarded from staging
+    include: [ui]
+    modes:
+      platform: staging
+```
+
+`devctl ui-staging` runs the UI's closure and starts the `platform` dependency
+in its `staging` mode instead of its manifest default. It is a starting
+configuration, not a lock: `m` still switches at runtime. A key must name a
+dependency that has modes, and the value one of that dependency's mode names, or
+the manifest is rejected at load. Two selected profiles that set one dependency
+to different modes is an error, since the run cannot honour both.
 
 **What a profile lists are the roots, not the whole set.** Whatever they need
 comes with them: `depends_on`, transitively, and anything a `{{ reference }}`
@@ -391,5 +414,7 @@ The load itself rejects:
   `kind` other than `mongo` or `tcp`
 - a dependency with both `modes` and an inline source, a mode without a name, two
   modes with one name, or a `default` naming no mode
+- a profile `modes` entry naming something that is not a dependency, a dependency
+  with a single source, or a mode that dependency does not have
 - `depends_on` naming something that does not exist
 - a reference that does not resolve

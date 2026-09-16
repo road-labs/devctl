@@ -4,6 +4,17 @@
 # and billing restarts pointed at the new one.
 id: billing
 
+# A profile can set how a dependency starts, not just what runs. `devctl mock`
+# brings billing up with platform already in mock mode, so you never touch the
+# platform repo. (You still press s on the platform row to start the mock
+# server, since a forward does not autostart.)
+profiles:
+  - name: mock
+    description: Billing against the local mock, no platform devctl needed
+    include: [billing]
+    modes:
+      platform: mock
+
 dependencies:
   - name: platform
     description: The platform API, live from the platform repo or a local mock

@@ -237,6 +237,21 @@ The narrowing happens before anything else reads the manifest, so a profile
 neither resolves dependencies it has no use for nor has its run refused over a
 port belonging to a service it is not starting.
 
+A profile can also say how its dependencies are wired, not just which things run.
+Give it `modes` to start a multi-mode dependency in a chosen source:
+
+```yaml
+profiles:
+  - name: ui-staging
+    description: The UI, with the platform API forwarded from staging
+    include: [ui]
+    modes:
+      platform: staging
+```
+
+`devctl ui-staging` runs the UI and starts `platform` forwarded rather than in
+its default mode. `m` still switches at runtime; this only sets where it starts.
+
 ## Your machine is not everyone's
 
 `devctl.mine.yaml`, beside the manifest and git-ignored, is merged over the top

@@ -22,8 +22,10 @@ func (f *File) Select(targets []string) (*File, error) {
 	}
 
 	// Roots: what was asked for, with profiles flattened. A profile may include
-	// another, so this walks.
+	// another, so this walks. A profile can also set the starting mode of a
+	// dependency, gathered here and applied to the selection below.
 	roots := map[string]bool{}
+	overrides := map[string]string{}
 	var expand func(name string, seen map[string]bool) error
 	expand = func(name string, seen map[string]bool) error {
 		if seen[name] {
@@ -31,6 +33,12 @@ func (f *File) Select(targets []string) (*File, error) {
 		}
 		seen[name] = true
 		if p, ok := profiles[name]; ok {
+			for dep, mode := range p.Modes {
+				if prev, dup := overrides[dep]; dup && prev != mode {
+					return fmt.Errorf("selected profiles set %q to both %q and %q", dep, prev, mode)
+				}
+				overrides[dep] = mode
+			}
 			for _, inc := range p.Include {
 				if err := expand(inc, seen); err != nil {
 					return err
@@ -78,9 +86,16 @@ func (f *File) Select(targets []string) (*File, error) {
 	out.Services = nil
 	out.Tasks = nil
 	for _, d := range f.Dependencies {
-		if want[d.Name] {
-			out.Dependencies = append(out.Dependencies, d)
+		if !want[d.Name] {
+			continue
 		}
+		// A profile's mode override becomes this dependency's default, so the panel
+		// and -check start it in the chosen mode. Validation has already checked
+		// the mode exists.
+		if mode, ok := overrides[d.Name]; ok {
+			d.Default = mode
+		}
+		out.Dependencies = append(out.Dependencies, d)
 	}
 	for _, s := range f.Services {
 		if want[s.Name] {
@@ -120,8 +135,39 @@ func (f *File) validateProfiles(claim func(name, what string) error) error {
 				return fmt.Errorf("profile %q includes %q, which is not a profile, service, task or dependency", p.Name, inc)
 			}
 		}
+		for depName, modeName := range p.Modes {
+			d := f.dependency(depName)
+			switch {
+			case d == nil:
+				return fmt.Errorf("profile %q sets a mode for %q, which is not a dependency", p.Name, depName)
+			case !d.HasModes():
+				return fmt.Errorf("profile %q sets a mode for %q, which has a single source", p.Name, depName)
+			case !d.hasMode(modeName):
+				return fmt.Errorf("profile %q sets %q to mode %q, which it does not have", p.Name, depName, modeName)
+			}
+		}
 	}
 	return nil
+}
+
+// dependency returns the dependency with this name, or nil.
+func (f *File) dependency(name string) *Dependency {
+	for i := range f.Dependencies {
+		if f.Dependencies[i].Name == name {
+			return &f.Dependencies[i]
+		}
+	}
+	return nil
+}
+
+// hasMode reports whether the dependency declares a mode of this name.
+func (d Dependency) hasMode(name string) bool {
+	for _, m := range d.Modes {
+		if m.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // entry is one named thing in the manifest and everything it cannot run

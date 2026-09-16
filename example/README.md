@@ -48,6 +48,16 @@ the MOCK platform`. Press **m** again and pick `local` to go back.
 That is the whole idea: one dependency, several sources, switched live, with
 everything that reads it following along.
 
+A profile can bake that choice in. `billing` declares a `mock` profile that
+starts `platform` in mock mode:
+
+```
+cd example/billing && devctl mock
+```
+
+Now the `platform` row comes up on `mock` from the start; press `s` to run the
+mock server. A profile sets not just what runs but how it is wired.
+
 ## What each feature looks like here
 
 - **id + peer** — `platform/devctl.yaml` sets `id: platform`;

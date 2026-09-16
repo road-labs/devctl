@@ -34,6 +34,15 @@ profiles:
   - name: everything-but-mail
     description: The shop without the mailer
     include: [storefront-only, seed]
+  # A profile can also say how a dependency is wired, not just which things run.
+  # This runs the storefront with stock forwarded from staging rather than read
+  # from the warehouse devctl. m still switches at runtime; this only sets where
+  # it starts.
+  - name: storefront-staging
+    description: The web front end, stock forwarded from staging
+    include: [storefront]
+    modes:
+      inventory: staging
 
 dependencies:
   # Provided by the machine. Its address comes from the environment or .env,
