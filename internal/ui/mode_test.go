@@ -2,6 +2,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
@@ -166,6 +167,45 @@ func TestPeerPublishedProvidesInherited(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "eu", env["WAREHOUSE_REGION"], "inherited from the peered service's published config")
 	assert.Equal(t, "local", env["STOCK_SOURCE"], "the mode's own provides win over the published base")
+}
+
+// A service that started before its peer resolved is restarted when the peer
+// appears, so it picks up the address rather than staying on the empty one it
+// booted with.
+func TestPeerResolveRestartsRunningConsumer(t *testing.T) {
+	m := model(t, 140, 50)
+	m.root = t.TempDir()
+	m.expand.Values["db.address"] = "postgres://x"
+
+	// catalogue depends_on inventory (peered, sibling not up). Run it as a cheap
+	// process so it is "running" when the peer resolves.
+	cat := m.byName["catalogue"]
+	cat.cfg.Cmd, cat.cfg.Dir, cat.cfg.Watch = "sleep 30", "", nil
+	m.start(cat, map[string]bool{})
+	deadline := time.Now().Add(3 * time.Second)
+	for !cat.running() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.True(t, cat.running(), "catalogue should be running")
+	defer m.stopAll()
+
+	starts := cat.starts
+	// The probe reports the warehouse peer resolving.
+	next, _ := m.Update(probeMsg{
+		ports: map[string]map[int]bool{}, deps: map[string]bool{},
+		peers: map[string]peerRead{"inventory": {port: 24999, provides: map[string]string{"STOCK_SOURCE": "local"}}},
+	})
+	m = next.(Model)
+	assert.Greater(t, cat.starts, starts, "the running consumer restarted when the peer resolved")
+
+	// A steady probe (nothing changed) must not churn it.
+	steady := cat.starts
+	next, _ = m.Update(probeMsg{
+		ports: map[string]map[int]bool{}, deps: map[string]bool{},
+		peers: map[string]peerRead{"inventory": {port: 24999, provides: map[string]string{"STOCK_SOURCE": "local"}}},
+	})
+	m = next.(Model)
+	assert.Equal(t, steady, cat.starts, "an unchanged peer read does not restart anything")
 }
 
 // A peered dependency waits for its sibling and picks it up when it appears,

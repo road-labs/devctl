@@ -242,23 +242,45 @@ func (m *Model) chooseMode(r *row, name string) tea.Cmd {
 	m.applyMode(r)
 	m.message = fmt.Sprintf("%s → %s, %s", r.dep.Name, r.activeModeName, describeMode(r.mode()))
 
+	cmds, restarted := m.restartConsumers(r.dep.Name)
+	if len(restarted) > 0 {
+		m.message += "; restarted " + strings.Join(restarted, ", ")
+	}
+	return tea.Batch(cmds...)
+}
+
+// restartConsumers restarts the running services that read a dependency, so they
+// come back with its current address and provided config. The reason to do it
+// on a mode switch, and when a peer resolves after those services have started.
+func (m *Model) restartConsumers(depName string) ([]tea.Cmd, []string) {
 	var cmds []tea.Cmd
 	var restarted []string
 	for _, other := range m.rows {
 		if other.dep != nil || other.task || !other.running() {
 			continue
 		}
-		if !readsDependency(other, r.dep.Name) {
+		if !readsDependency(other, depName) {
 			continue
 		}
 		m.stopProcess(other)
 		cmds = append(cmds, m.start(other, map[string]bool{}))
 		restarted = append(restarted, other.cfg.Name)
 	}
-	if len(restarted) > 0 {
-		m.message += "; restarted " + strings.Join(restarted, ", ")
+	return cmds, restarted
+}
+
+// sameProvides reports whether two published-config maps are equal, so a peer
+// read that changed nothing does not churn the services that read it.
+func sameProvides(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return tea.Batch(cmds...)
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // describeMode names a mode's kind for a status line.
@@ -449,17 +471,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// A peered sibling that has come up, gone away, or moved its port: apply
 		// the new number so consumers follow it, exactly as they would a port
-		// allocated at start. The provided config is refreshed alongside.
+		// allocated at start, and its published config alongside. When the address
+		// or config actually changed, restart the running services that read it, so
+		// a peer that appears after they started is picked up rather than leaving
+		// them on the empty endpoint they booted with.
+		var cmds []tea.Cmd
 		for name, read := range msg.peers {
-			if m.peerPort[name] != read.port {
-				m.peerPort[name] = read.port
-				if r, ok := m.byName[name]; ok {
-					m.applyMode(r)
+			changed := m.peerPort[name] != read.port || !sameProvides(m.peerProvides[name], read.provides)
+			m.peerPort[name] = read.port
+			m.peerProvides[name] = read.provides
+			if !changed {
+				continue
+			}
+			if r, ok := m.byName[name]; ok {
+				m.applyMode(r)
+			}
+			// Only when there is an address to pick up, so a peer going away does
+			// not restart working services into an empty endpoint.
+			if read.port != 0 {
+				cs, restarted := m.restartConsumers(name)
+				cmds = append(cmds, cs...)
+				if len(restarted) > 0 {
+					m.message = fmt.Sprintf("%s resolved, restarted %s", name, strings.Join(restarted, ", "))
 				}
 			}
-			m.peerProvides[name] = read.provides
 		}
-		return m, nil
+		return m, tea.Batch(cmds...)
 	case Shutdown:
 		m.stopAll()
 		return m, tea.Quit

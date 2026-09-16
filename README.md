@@ -227,7 +227,9 @@ Another repository's devctl then reads them by that id with a `peer` dependency,
 so `billing` finds `platform` on whatever port it actually got, with nobody
 writing a number down. The socket lives under the system temp directory and is
 removed when devctl quits. Start order does not matter: a devctl that peers with a
-sibling not yet running shows `waiting`, and picks it up the moment it comes up.
+sibling not yet running shows `waiting`, and picks it up the moment it comes up,
+restarting the running services that read it so they never stay on an empty
+endpoint.
 Two devctls cannot share one id; the second refuses to start, which catches a
 stray copy.
 

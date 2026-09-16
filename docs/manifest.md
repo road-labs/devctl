@@ -255,7 +255,9 @@ socket left behind by a devctl that did not clean up is taken over.
 
 Ports are allocated once at start and do not move, so what a sibling reads is
 fixed for the run. Start order does not matter: a devctl that peers with a sibling
-not yet running shows `waiting` and picks the sibling up when it appears.
+not yet running shows `waiting` and picks the sibling up when it appears. A
+service that had already started against a not-yet-resolved peer is restarted
+when it resolves, so it never stays on the empty endpoint it booted with.
 
 ## tasks
 
