@@ -132,9 +132,14 @@ type entry struct{ needs []string }
 func (f *File) find(name string) *entry {
 	for _, d := range f.Dependencies {
 		if d.Name == name {
+			// Union across modes: a forward mode's cmd may name a port, and
+			// narrowing must keep it whichever mode is live. Peer and env modes
+			// need nothing local.
 			needs := []string{}
-			if d.Forward != nil {
-				needs = append(needs, References(d.Forward.Cmd)...)
+			for _, m := range d.Modeset() {
+				if m.Forward != nil {
+					needs = append(needs, References(m.Forward.Cmd)...)
+				}
 			}
 			return &entry{needs: needs}
 		}

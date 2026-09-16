@@ -33,6 +33,12 @@ const EnvFile = ".env"
 // Key is how a machine-provided dependency's address is referenced.
 func Key(dep config.Dependency) string { return dep.Name + ".address" }
 
+// ModeKey is where a multi-mode dependency's machine-provided address is kept,
+// one per env mode. It is not a reference: a mode is chosen at runtime, not
+// named in a manifest, so the space keeps it out of the {{ name.address }}
+// grammar entirely.
+func ModeKey(dep, mode string) string { return dep + " " + mode + ".address" }
+
 // Resolve finds the address of every machine-provided dependency, process
 // environment first, then <root>/.env, keyed for the manifest
 // ({{ mongo.address }}). A missing required one is an error that says exactly
@@ -43,23 +49,38 @@ func Resolve(root string, deps []config.Dependency) (ports.Values, error) {
 	if err != nil {
 		return nil, err
 	}
+	get := func(env string) string {
+		if v := os.Getenv(env); v != "" {
+			return v
+		}
+		return fromFile[env]
+	}
 	values := ports.Values{}
 	var missing []string
 	for _, dep := range deps {
-		if dep.Forwarded() {
+		// A multi-mode dependency resolves every machine-provided mode it has, so
+		// switching to one finds its address ready. None of them is required: a
+		// mode you can switch away from is not one anything waits for.
+		if dep.HasModes() {
+			for _, mode := range dep.Modes {
+				if mode.Env != "" {
+					values[ModeKey(dep.Name, mode.Name)] = get(mode.Env)
+				}
+			}
 			continue
 		}
-		value := os.Getenv(dep.Env)
-		if value == "" {
-			value = fromFile[dep.Env]
+		inline := dep.Modeset()[0]
+		if inline.Env == "" {
+			continue // forwarded or peered: nothing to read from the environment
 		}
+		value := get(inline.Env)
 		values[Key(dep)] = value
 		if value == "" && !dep.Optional {
-			example := dep.Example
+			example := inline.Example
 			if example == "" {
 				example = "<address>"
 			}
-			missing = append(missing, fmt.Sprintf("  %s=%s   # %s", dep.Env, example, dep.Description))
+			missing = append(missing, fmt.Sprintf("  %s=%s   # %s", inline.Env, example, dep.Description))
 		}
 	}
 	if len(missing) > 0 {

@@ -45,8 +45,8 @@ func TestExampleManifestLoads(t *testing.T) {
 	assert.Equal(t, []string{"catalogue"}, byName["storefront"].DependsOn)
 	assert.Empty(t, byName["mailer"].Ports, "a worker needs no ports")
 
-	require.Len(t, file.Dependencies, 2)
-	machine, forwarded := file.Dependencies[0], file.Dependencies[1]
+	require.Len(t, file.Dependencies, 3)
+	machine, forwarded, multi := file.Dependencies[0], file.Dependencies[1], file.Dependencies[2]
 	assert.Equal(t, "db", machine.Name)
 	assert.Equal(t, "DATABASE_URL", machine.Env)
 	assert.False(t, machine.Forwarded(), "the machine provides this one")
@@ -55,6 +55,23 @@ func TestExampleManifestLoads(t *testing.T) {
 	assert.True(t, forwarded.Optional, "a forwarded dependency is optional by nature, without saying so")
 	assert.Contains(t, forwarded.Forward.Cmd, "{{ payments.port.number }}",
 		"the forward states its local port once, by referring to itself")
+
+	assert.Equal(t, "inventory", multi.Name)
+	assert.True(t, multi.HasModes())
+	assert.True(t, multi.Optional, "a dependency you can switch is optional by nature")
+	assert.Equal(t, "local", multi.DefaultMode(), "the default mode is live at start")
+	require.Len(t, multi.Modes, 2)
+	local := multi.Mode("local")
+	require.NotNil(t, local.Peer)
+	assert.True(t, local.Peered())
+	assert.Equal(t, "warehouse", local.Peer.ID, "local reads from the sibling devctl")
+	staging := multi.Mode("staging")
+	assert.True(t, staging.Forwarded(), "staging opens a tunnel instead")
+	assert.Contains(t, staging.Forward.Cmd, "{{ inventory.port.number }}")
+	assert.Equal(t, local, multi.Mode("no such mode"), "a stale selection falls back to the default")
+
+	assert.Equal(t, "{{ inventory.address }}", catalogue.Env["INVENTORY_ADDR"],
+		"a multi-mode dependency is read as one address, whichever mode is live")
 
 	assert.Equal(t, "{{ db.address }}", catalogue.Env["DATABASE_URL"])
 	assert.Equal(t, "{{ payments.port }}", catalogue.Env["PAYMENTS_ADDR"])
@@ -67,6 +84,28 @@ func TestExampleManifestLoads(t *testing.T) {
 	assert.Equal(t, catalogue.Env["API_KEY"], seed.Env["API_KEY"],
 		"one value, stated once as a YAML anchor")
 	assert.NotEmpty(t, seed.Env["API_KEY"])
+}
+
+// A dependency read from a sibling devctl, written inline as its only source.
+func TestSingleSourcePeerLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devctl.yaml")
+	body := "dependencies:\n" +
+		"  - name: platform\n" +
+		"    peer: {id: platform, service: gateway, port: http}\n" +
+		"services:\n" +
+		"  - name: ui\n" +
+		"    cmd: npm run dev\n" +
+		"    env:\n" +
+		"      PLATFORM_ADDR: \"{{ platform.port.url }}\"\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
+	file, err := Load(path)
+	require.NoError(t, err)
+	dep := file.Dependencies[0]
+	assert.True(t, dep.Peered())
+	assert.True(t, dep.Optional, "a peered dependency is optional by nature")
+	assert.Equal(t, "gateway", dep.Peer.Service)
+	assert.Equal(t, "", dep.DefaultMode(), "a single source has no mode to name")
 }
 
 func TestValidation(t *testing.T) {
@@ -91,6 +130,13 @@ func TestValidation(t *testing.T) {
 		"task without cmd":        "services:\n  - name: a\n    cmd: x\ntasks:\n  - name: t\n",
 		"task unknown dependency": "services:\n  - name: a\n    cmd: x\ntasks:\n  - name: t\n    cmd: x\n    depends_on: [b]\n",
 		"task named like service": "services:\n  - name: a\n    cmd: x\ntasks:\n  - name: a\n    cmd: x\n",
+		"peer missing service":    "dependencies:\n  - name: d\n    peer: {id: p, port: grpc}\nservices:\n  - name: a\n    cmd: x\n",
+		"env and link together":   "dependencies:\n  - name: d\n    env: X\n    peer: {id: p, service: s, port: grpc}\nservices:\n  - name: a\n    cmd: x\n",
+		"modes and inline source": "dependencies:\n  - name: d\n    env: X\n    modes:\n      - name: local\n        env: Y\nservices:\n  - name: a\n    cmd: x\n",
+		"mode without a name":     "dependencies:\n  - name: d\n    modes:\n      - env: Y\nservices:\n  - name: a\n    cmd: x\n",
+		"duplicate mode name":     "dependencies:\n  - name: d\n    modes:\n      - name: local\n        env: Y\n      - name: local\n        env: Z\nservices:\n  - name: a\n    cmd: x\n",
+		"default names no mode":   "dependencies:\n  - name: d\n    default: staging\n    modes:\n      - name: local\n        env: Y\nservices:\n  - name: a\n    cmd: x\n",
+		"mode with two sources":   "dependencies:\n  - name: d\n    modes:\n      - name: local\n        env: Y\n        peer: {id: p, service: s, port: grpc}\nservices:\n  - name: a\n    cmd: x\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Load(write(t, body))

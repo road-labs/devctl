@@ -1,0 +1,31 @@
+# The billing project. It needs the platform API, and there are two ways to get
+# it: peer with the platform devctl running next door, or run a local mock. The
+# `platform` dependency declares both as modes; press m on its row to switch,
+# and billing restarts pointed at the new one.
+id: billing
+
+dependencies:
+  - name: platform
+    description: The platform API, live from the platform repo or a local mock
+    default: local
+    modes:
+      # Read the api port straight from the platform devctl. Run that project and
+      # this row goes from "waiting" to "peered" on its own.
+      - name: local
+        peer: {id: platform, service: api, port: http}
+      # No platform devctl needed: press s on this row to start a local mock on
+      # the forwarded port, and billing talks to that instead.
+      - name: mock
+        port: 8199
+        forward: {cmd: "go run ./cmd/mockapi {{ platform.port.number }}"}
+
+services:
+  - name: billing
+    description: Calls the platform API every few seconds and logs what it gets
+    depends_on: [platform]
+    autostart: true
+    watch: [cmd/billing]
+    cmd: go run ./cmd/billing
+    env:
+      # Whichever mode is live, this is the address to call.
+      PLATFORM_ADDR: "{{ platform.address }}"

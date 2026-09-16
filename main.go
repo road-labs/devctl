@@ -24,6 +24,7 @@ import (
 
 	"github.com/road-labs/devctl/internal/config"
 	"github.com/road-labs/devctl/internal/deps"
+	"github.com/road-labs/devctl/internal/peer"
 	"github.com/road-labs/devctl/internal/ports"
 	"github.com/road-labs/devctl/internal/proc"
 	"github.com/road-labs/devctl/internal/ui"
@@ -182,6 +183,16 @@ func main() {
 		return
 	}
 
+	// Publish this devctl's ports so a sibling that peers with it by id can read
+	// the numbers it actually got. Nothing is published without an id.
+	if file.ID != "" {
+		closer, err := peer.Serve(peer.Snapshot{ID: file.ID, Ports: table})
+		if err != nil {
+			fail(err)
+		}
+		defer closer.Close()
+	}
+
 	program := tea.NewProgram(ui.New(repoRoot, file, table, values, warnings), tea.WithAltScreen())
 
 	// The children live in their own process groups so devctl can stop them
@@ -305,19 +316,7 @@ func printSummary(file *config.File, table ports.Table, values ports.Values, war
 		if d.Optional {
 			kind = "optional"
 		}
-		switch {
-		case d.Forwarded():
-			// The command as it will actually run: it refers to its own allocated port.
-			cmd, err := expand.Expand(d.Forward.Cmd)
-			if err != nil {
-				cmd = d.Forward.Cmd
-			}
-			fmt.Printf("%-14s %-11s localhost:%d via: %s\n", d.Name, kind, table[d.Name][ports.ForwardPort], cmd)
-		case values[deps.Key(d)] == "":
-			fmt.Printf("%-14s %-11s not configured (%s)\n", d.Name, kind, d.Env)
-		default:
-			fmt.Printf("%-14s %-11s %s\n", d.Name, kind, deps.Redact(values[deps.Key(d)]))
-		}
+		fmt.Printf("%-14s %-11s %s\n", d.Name, kind, depSummary(d, table, values, expand))
 	}
 	for _, s := range file.Services {
 		watch := ""
@@ -332,4 +331,46 @@ func printSummary(file *config.File, table ports.Table, values ports.Values, war
 	for _, w := range warnings {
 		fmt.Println("warning:", w)
 	}
+}
+
+// depSummary is the one-line plan a dependency shows under -check, read through
+// its mode live at start. A peered sibling is read now, so the plan says whether
+// it is up; a multi-mode dependency is prefixed with the mode it will use.
+func depSummary(d config.Dependency, table ports.Table, values ports.Values, expand ports.Expander) string {
+	mode := d.Mode(d.DefaultMode())
+	body := ""
+	switch {
+	case mode.Peered():
+		switch snap, running, _ := peer.Read(mode.Peer.ID); {
+		case !running:
+			body = fmt.Sprintf("waiting for %s", mode.Peer.ID)
+		default:
+			if p, ok := snap.Port(mode.Peer.Service, mode.Peer.Port); ok {
+				body = fmt.Sprintf("peered localhost:%d (from %s)", p, mode.Peer.ID)
+			} else {
+				body = fmt.Sprintf("waiting: %s has no %s.%s", mode.Peer.ID, mode.Peer.Service, mode.Peer.Port)
+			}
+		}
+	case mode.Forwarded():
+		// The command as it will actually run: it refers to its own local port.
+		cmd, err := expand.Expand(mode.Forward.Cmd)
+		if err != nil {
+			cmd = mode.Forward.Cmd
+		}
+		body = fmt.Sprintf("forward localhost:%d via: %s", table[d.Name][ports.ForwardPort], cmd)
+	default: // machine-provided
+		value := values[deps.Key(d)]
+		if d.HasModes() {
+			value = values[deps.ModeKey(d.Name, mode.Name)]
+		}
+		if value == "" {
+			body = fmt.Sprintf("not configured (%s)", mode.Env)
+		} else {
+			body = deps.Redact(value)
+		}
+	}
+	if d.HasModes() {
+		return mode.Name + ": " + body
+	}
+	return body
 }

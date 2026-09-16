@@ -21,6 +21,7 @@ import (
 
 	"github.com/road-labs/devctl/internal/config"
 	"github.com/road-labs/devctl/internal/deps"
+	"github.com/road-labs/devctl/internal/peer"
 	"github.com/road-labs/devctl/internal/ports"
 	"github.com/road-labs/devctl/internal/proc"
 	"github.com/road-labs/devctl/internal/watch"
@@ -49,6 +50,11 @@ type row struct {
 	reachable bool
 	probed    bool
 
+	// activeModeName is the live mode of a multi-mode dependency, "" for a
+	// single-source one. It decides where the dependency's address comes from
+	// and is cycled by m.
+	activeModeName string
+
 	proc      *proc.Process
 	portsOpen map[int]bool
 	// starts counts how many times this row's process has been launched, so
@@ -68,13 +74,16 @@ type Model struct {
 	logs     *config.Logs
 	logBytes int64
 
-	expand  ports.Expander
-	rows    []*row
-	byName  map[string]*row
-	cursor  int
-	width   int
-	height  int
-	message string
+	expand ports.Expander
+	// peerPort is the sibling port devctl last read for each dependency whose
+	// active mode peers to another devctl, 0 while that sibling is not running.
+	peerPort map[string]int
+	rows     []*row
+	byName   map[string]*row
+	cursor   int
+	width    int
+	height   int
+	message  string
 
 	// The full-screen log view: every process's output merged in the order
 	// it arrived, or one process's, scrollable, following the tail until
@@ -84,12 +93,18 @@ type Model struct {
 	logFilter string // row name, or "" for every row
 	follow    bool
 	viewport  viewport.Model
+
+	// The mode picker: open on a multi-mode dependency, modeTarget names it and
+	// modeCursor is the highlighted mode.
+	modePick   bool
+	modeTarget string
+	modeCursor int
 }
 
 // New builds the model from the manifest, the allocated port table and the
 // resolved dependency addresses.
 func New(root string, file *config.File, table ports.Table, values ports.Values, warnings []string) Model {
-	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, byName: map[string]*row{}, follow: true, logs: file.Logs}
+	m := Model{root: root, expand: ports.Expander{Ports: table, Values: values}, peerPort: map[string]int{}, byName: map[string]*row{}, follow: true, logs: file.Logs}
 	// Load has already refused an unparseable size, so this cannot fail here.
 	m.logBytes, _ = file.Logs.Bytes()
 	m.viewport = viewport.New(80, 20)
@@ -112,17 +127,12 @@ func New(root string, file *config.File, table ports.Table, values ports.Values,
 	}
 	for i := range file.Dependencies {
 		dep := &file.Dependencies[i]
-		r := &row{dep: dep, cfg: config.Service{Name: dep.Name, Description: dep.Description}}
-		if dep.Forwarded() {
-			port := table[dep.Name][ports.ForwardPort]
-			r.address = "localhost:" + strconv.Itoa(port)
-			r.hostPort = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-			r.cfg.Cmd, r.cfg.Dir = dep.Forward.Cmd, dep.Forward.Dir
-		} else {
-			r.address = values[deps.Key(*dep)]
-			r.hostPort, _ = deps.HostPort(r.address)
-		}
+		r := &row{dep: dep, cfg: config.Service{Name: dep.Name, Description: dep.Description}, activeModeName: dep.DefaultMode()}
 		add(r)
+		// A dependency peered with a sibling is read now, so a sibling already up
+		// shows as peered from the first frame rather than after the first probe.
+		m.readPeer(r)
+		m.applyMode(r)
 	}
 	for _, svc := range file.Services {
 		add(&row{cfg: svc, autoRestart: len(svc.Watch) > 0})
@@ -136,11 +146,157 @@ func New(root string, file *config.File, table ports.Table, values ports.Values,
 	return m
 }
 
+// mode returns a dependency row's active source. For a single-source dependency
+// it is that one source; for a multi-mode one it is whichever mode is live.
+func (r *row) mode() config.Mode { return r.dep.Mode(r.activeModeName) }
+
+// applyMode makes a dependency row reflect its active mode: where its address
+// comes from, whether there is a tunnel to run, and, for a multi-mode
+// dependency, the {{ name.address }} every consumer resolves through. It is the
+// one place a mode's kind is turned into an address, so New, a switch and a peer
+// re-read all go through it.
+func (m *Model) applyMode(r *row) {
+	if r.dep == nil {
+		return
+	}
+	mode := r.mode()
+	switch {
+	case mode.Forwarded():
+		port := m.expand.Ports[r.dep.Name][ports.ForwardPort]
+		r.address = "localhost:" + strconv.Itoa(port)
+		r.hostPort = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+		r.cfg.Cmd, r.cfg.Dir = mode.Forward.Cmd, mode.Forward.Dir
+	case mode.Peered():
+		r.cfg.Cmd, r.cfg.Dir = "", ""
+		if port := m.peerPort[r.dep.Name]; port != 0 {
+			r.address = "localhost:" + strconv.Itoa(port)
+			r.hostPort = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+			// A single-source peer is referenced as {{ name.port }}, resolved from
+			// the port table like a forward's.
+			if !r.dep.HasModes() {
+				m.expand.Ports[r.dep.Name] = map[string]int{ports.ForwardPort: port}
+			}
+		} else {
+			r.address, r.hostPort = "", ""
+			if !r.dep.HasModes() {
+				delete(m.expand.Ports, r.dep.Name)
+			}
+		}
+	default: // machine-provided
+		r.cfg.Cmd, r.cfg.Dir = "", ""
+		r.address = m.envModeValue(r.dep, mode)
+		r.hostPort, _ = deps.HostPort(r.address)
+	}
+	if r.dep.HasModes() {
+		m.expand.Values[r.dep.Name+".address"] = r.address
+	}
+}
+
+// envModeValue is the machine-provided address of a mode, resolved earlier from
+// the environment or .env.
+func (m Model) envModeValue(dep *config.Dependency, mode config.Mode) string {
+	if dep.HasModes() {
+		return m.expand.Values[deps.ModeKey(dep.Name, mode.Name)]
+	}
+	return m.expand.Values[deps.Key(*dep)]
+}
+
+// readPeer reads the sibling a dependency's active mode peers to, recording the
+// port it publishes or 0 when it is not running. A no-op for any other mode.
+func (m *Model) readPeer(r *row) {
+	if r.dep == nil {
+		return
+	}
+	mode := r.mode()
+	if !mode.Peered() {
+		return
+	}
+	port := 0
+	if snap, running, _ := peer.Read(mode.Peer.ID); running {
+		if p, ok := snap.Port(mode.Peer.Service, mode.Peer.Port); ok {
+			port = p
+		}
+	}
+	m.peerPort[r.dep.Name] = port
+}
+
+// chooseMode makes name the active mode of a dependency and restarts the running
+// services that read it, so they come back pointed at the new source. Choosing
+// the mode already live does nothing.
+func (m *Model) chooseMode(r *row, name string) tea.Cmd {
+	if r.dep == nil || name == "" || name == r.activeModeName {
+		return nil
+	}
+	// A forward tunnel belongs to the mode it opened; leaving that mode stops it.
+	if r.proc != nil {
+		m.stopProcess(r)
+	}
+	r.activeModeName = name
+	m.readPeer(r)
+	m.applyMode(r)
+	m.message = fmt.Sprintf("%s → %s, %s", r.dep.Name, r.activeModeName, describeMode(r.mode()))
+
+	var cmds []tea.Cmd
+	var restarted []string
+	for _, other := range m.rows {
+		if other.dep != nil || other.task || !other.running() {
+			continue
+		}
+		if !readsDependency(other, r.dep.Name) {
+			continue
+		}
+		m.stopProcess(other)
+		cmds = append(cmds, m.start(other, map[string]bool{}))
+		restarted = append(restarted, other.cfg.Name)
+	}
+	if len(restarted) > 0 {
+		m.message += "; restarted " + strings.Join(restarted, ", ")
+	}
+	return tea.Batch(cmds...)
+}
+
+// describeMode names a mode's kind for a status line.
+func describeMode(mode config.Mode) string {
+	switch {
+	case mode.Peered():
+		return "peered with " + mode.Peer.ID
+	case mode.Forwarded():
+		return "forwarded"
+	default:
+		return "provided by the machine"
+	}
+}
+
+// readsDependency reports whether a service consumes a dependency, by depends_on
+// or by naming it in a reference: either way, switching the dependency's source
+// means restarting it.
+func readsDependency(r *row, name string) bool {
+	for _, d := range r.cfg.DependsOn {
+		if d == name {
+			return true
+		}
+	}
+	values := make([]string, 0, 1+len(r.cfg.Env))
+	values = append(values, r.cfg.Cmd)
+	for _, v := range r.cfg.Env {
+		values = append(values, v)
+	}
+	for _, v := range values {
+		for _, ref := range config.References(v) {
+			if ref == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type tickMsg time.Time
 
 type probeMsg struct {
 	ports map[string]map[int]bool
 	deps  map[string]bool
+	peers map[string]int
 }
 
 // changedMsg says a watched service's source changed.
@@ -181,8 +337,13 @@ func (m Model) probe() tea.Cmd {
 		port int
 	}
 	var targets []target
+	type peerTarget struct{ dep, id, service, port string }
+	var peers []peerTarget
 	for _, r := range m.rows {
 		if r.dep != nil {
+			if mode := r.mode(); mode.Peered() {
+				peers = append(peers, peerTarget{r.dep.Name, mode.Peer.ID, mode.Peer.Service, mode.Peer.Port})
+			}
 			if r.hostPort != "" {
 				targets = append(targets, target{name: r.cfg.Name, addr: r.hostPort})
 			}
@@ -193,7 +354,16 @@ func (m Model) probe() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
-		results := probeMsg{ports: map[string]map[int]bool{}, deps: map[string]bool{}}
+		results := probeMsg{ports: map[string]map[int]bool{}, deps: map[string]bool{}, peers: map[string]int{}}
+		for _, lt := range peers {
+			port := 0
+			if snap, running, _ := peer.Read(lt.id); running {
+				if p, ok := snap.Port(lt.service, lt.port); ok {
+					port = p
+				}
+			}
+			results.peers[lt.dep] = port
+		}
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		for _, t := range targets {
@@ -263,6 +433,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.reachable, r.probed = reachable, true
 			}
 		}
+		// A peered sibling that has come up, gone away, or moved its port: apply
+		// the new number so consumers follow it, exactly as they would a port
+		// allocated at start.
+		for name, port := range msg.peers {
+			if m.peerPort[name] != port {
+				m.peerPort[name] = port
+				if r, ok := m.byName[name]; ok {
+					m.applyMode(r)
+				}
+			}
+		}
 		return m, nil
 	case Shutdown:
 		m.stopAll()
@@ -287,10 +468,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleLogKey(msg)
 		case m.describe:
 			return m.handleDescribeKey(msg)
+		case m.modePick:
+			return m.handleModePickKey(msg)
 		}
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleModePickKey drives the mode picker: move, choose, or leave. Digits pick
+// a mode directly.
+func (m Model) handleModePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	r, ok := m.byName[m.modeTarget]
+	if !ok || r.dep == nil || !r.dep.HasModes() {
+		m.modePick = false
+		return m, nil
+	}
+	modes := r.dep.Modes
+	switch key := msg.String(); key {
+	case "q", "ctrl+c":
+		m.stopAll()
+		return m, tea.Quit
+	case "esc", "m":
+		m.modePick = false
+		return m, nil
+	case "up", "k":
+		if m.modeCursor > 0 {
+			m.modeCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.modeCursor < len(modes)-1 {
+			m.modeCursor++
+		}
+		return m, nil
+	case "enter", " ":
+		m.modePick = false
+		cmd := m.chooseMode(r, modes[m.modeCursor].Name)
+		return m, cmd
+	default:
+		// A digit jumps straight to that mode and chooses it.
+		if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+			if i := int(key[0] - '1'); i < len(modes) {
+				m.modeCursor = i
+				m.modePick = false
+				cmd := m.chooseMode(r, modes[i].Name)
+				return m, cmd
+			}
+		}
+		return m, nil
+	}
 }
 
 // handleDescribeKey drives the describe view: scrolling, and the ways out.
@@ -426,9 +653,24 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup", "ctrl+u":
 		m.cursor = m.nextGroup(-1)
 	case "s", "enter":
-		if sel.dep != nil && !sel.dep.Forwarded() {
-			m.message = fmt.Sprintf("%s is provided by the machine: set %s in .env", sel.cfg.Name, sel.dep.Env)
-			return m, nil
+		if sel.dep != nil {
+			mode := sel.mode()
+			switch {
+			case mode.Peered():
+				// Nothing to start: read the sibling again, in case it has just
+				// come up and the next probe has not run yet.
+				m.readPeer(sel)
+				m.applyMode(sel)
+				if sel.address == "" {
+					m.message = fmt.Sprintf("%s: no socket for %s yet — start the %s devctl", sel.cfg.Name, mode.Peer.ID, mode.Peer.ID)
+				} else {
+					m.message = fmt.Sprintf("%s: read %s from the %s devctl's socket", sel.cfg.Name, sel.address, mode.Peer.ID)
+				}
+				return m, nil
+			case !mode.Forwarded(): // machine-provided
+				m.message = fmt.Sprintf("%s is provided by the machine: set %s in .env", sel.cfg.Name, mode.Env)
+				return m, nil
+			}
 		}
 		if sel.task && sel.proc != nil {
 			// A finished task can be run again; a running one is left alone.
@@ -451,6 +693,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "w":
 		cmd := m.toggleWatch(sel)
 		return m, cmd
+	case "m":
+		// Open the mode picker on a multi-mode dependency. A single-source one
+		// has nothing to choose.
+		if sel.dep == nil || !sel.dep.HasModes() {
+			if sel.dep != nil {
+				m.message = fmt.Sprintf("%s has a single source, nothing to switch", sel.cfg.Name)
+			}
+			return m, nil
+		}
+		m.modePick = true
+		m.modeTarget = sel.dep.Name
+		m.modeCursor = 0
+		for i, md := range sel.dep.Modes {
+			if md.Name == sel.activeModeName {
+				m.modeCursor = i
+				break
+			}
+		}
+		return m, nil
 	case "d":
 		// Everything devctl knows about this row, and what it is wired to.
 		m.describe = true
@@ -576,7 +837,7 @@ func (m *Model) start(r *row, visiting map[string]bool) tea.Cmd {
 	}
 	visiting[r.cfg.Name] = true
 
-	if r.running() || (r.dep != nil && !r.dep.Forwarded()) {
+	if r.running() || (r.dep != nil && !r.mode().Forwarded()) {
 		return nil
 	}
 	// Preflight: every port the service will bind must be free right now, not
@@ -793,14 +1054,46 @@ func (r *row) status() (label string, style lipgloss.Style) {
 	return up("starting"), styleWarn
 }
 
-// depStatus: a machine-provided dependency is configured or not and answers
-// or not; a forwarded one also has the tunnel process to account for.
+// depStatus reads the active mode: a machine-provided one is configured or not
+// and answers or not; a forwarded one also has the tunnel process to account
+// for; a peered one is waiting for its sibling or reading its port.
 func (r *row) depStatus(up func(string) string) (string, lipgloss.Style) {
 	unreachable := styleBad
 	if r.dep.Optional {
 		unreachable = styleWarn
 	}
-	if !r.dep.Forwarded() {
+	mode := r.mode()
+	switch {
+	case mode.Peered():
+		switch {
+		case r.address == "":
+			return "waiting", styleMuted
+		case r.probed && r.reachable:
+			return "peered", styleGood
+		case !r.probed:
+			return "peered", styleMuted
+		default:
+			return "peered", unreachable
+		}
+	case mode.Forwarded():
+		if r.proc != nil {
+			state, code := r.proc.State()
+			switch {
+			case state == proc.StateRunning && r.reachable:
+				return up("forwarded"), styleGood
+			case state == proc.StateRunning:
+				return up("connecting"), styleWarn
+			case code == 0:
+				return "exited", styleMuted
+			default:
+				return fmt.Sprintf("failed (%d)", code), styleBad
+			}
+		}
+		if r.probed && r.reachable {
+			return "reachable", styleGood
+		}
+		return "down", styleMuted
+	default: // machine-provided
 		switch {
 		case r.address == "":
 			return "not configured", styleMuted
@@ -812,23 +1105,6 @@ func (r *row) depStatus(up func(string) string) (string, lipgloss.Style) {
 			return "unreachable", unreachable
 		}
 	}
-	if r.proc != nil {
-		state, code := r.proc.State()
-		switch {
-		case state == proc.StateRunning && r.reachable:
-			return up("forwarded"), styleGood
-		case state == proc.StateRunning:
-			return up("connecting"), styleWarn
-		case code == 0:
-			return "exited", styleMuted
-		default:
-			return fmt.Sprintf("failed (%d)", code), styleBad
-		}
-	}
-	if r.probed && r.reachable {
-		return "reachable", styleGood
-	}
-	return "down", styleMuted
 }
 
 func (r *row) allPortsOpen() bool {

@@ -84,16 +84,23 @@ A `listen` entry naming a port the service does not declare is an error at load.
 What a run needs that devctl does not start. Checked before anything runs, so a
 missing database is a clear message rather than a service crash.
 
+A dependency has one source, or several it switches between. The source is one
+of three kinds: provided by the machine (`env`), forwarded by devctl (`port` +
+`forward`), or peered with a sibling devctl (`peer`).
+
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `name` | string | Unique. Used in `{{ name.address }}` or `{{ name.port }}`. |
 | `description` | string | One line, shown in the panel. |
-| `kind` | string | How it is checked: `mongo` for a driver ping, `tcp` for a dial. Defaults to `tcp`. |
+| `kind` | string | How a machine-provided one is checked: `mongo` for a driver ping, `tcp` for a dial. Defaults to `tcp`. |
 | `optional` | bool | Warn rather than stop when missing or unreachable. |
 | `env` | string | Machine-provided: the variable holding its address. |
 | `example` | string | Shown when that variable is missing, so the fix is copy-paste. |
 | `port` | int | Forwarded: the local port. |
 | `forward` | map | Forwarded: `{cmd, dir}` opening the tunnel. |
+| `peer` | map | Peered: `{id, service, port}` naming a sibling devctl's listener. |
+| `modes` | list | Several named sources to switch between, see below. |
+| `default` | string | Which mode is live at start. Defaults to the first. |
 
 ### Provided by the machine
 
@@ -128,9 +135,79 @@ The local port is allocated from the same table as a service's, and the command
 refers to it rather than repeating the number. Services reach it as
 `{{ payments.port }}`.
 
-A dependency is one or the other. `env` together with `port` and `forward` is an
-error, as is a `port` with no `forward`, because neither says clearly where the
-address is meant to come from.
+A dependency is one kind at a time. `env` together with `port` and `forward`, or
+`env` together with `peer`, is an error, as is a `port` with no `forward`,
+because none of them says clearly where the address is meant to come from.
+
+### Peered with a sibling devctl
+
+When you run devctl from several repositories at once and some depend on others,
+a `peer` reads another devctl's live ports rather than repeating a number that
+moves. It names that devctl by its `id` and the service and port it declares.
+The sibling already listens on localhost, so there is no tunnel: devctl reads the
+number the sibling actually got and services reach it as `{{ name.port }}`.
+
+```yaml
+  - name: platform-api
+    description: The platform gateway, read live from the platform repo
+    peer: {id: platform, service: gateway, port: http}
+```
+
+A peered dependency is optional by nature, like a forward: nothing waits for a
+sibling. Until the sibling with that `id` is running the row shows `waiting`, and
+it becomes `peered` the moment the sibling comes up. The sibling must set a
+top-level [`id`](#id) for this to find it.
+
+### Several sources (modes)
+
+A dependency you point at a local service one minute and a port-forwarded
+environment the next declares its sources as named `modes` and switches between
+them live: press `m` on its row and pick one from the list. `default` names the
+one live at start.
+
+```yaml
+  - name: platform
+    description: The platform API
+    default: local
+    modes:
+      - {name: local,   peer: {id: platform, service: gateway, port: http}}
+      - {name: staging, port: 7100, forward: {cmd: "kubectl -n plat port-forward svc/gateway {{ platform.port.number }}:8080"}}
+      - {name: shared,  env: PLATFORM_URL, example: https://platform.staging}
+```
+
+Each mode is one of the three source kinds, written the way it would be inline.
+A dependency with modes carries no inline source of its own, and it is optional
+by nature: a mode you can switch away from is not one anything waits for.
+
+**A dependency with modes is referenced only as `{{ name.address }}`**, which
+resolves to a dialable address whichever mode is live: the env value, or
+`localhost:<port>` for a forward or a peer. The other reference forms
+(`{{ name.port }}`, `.number`, `.url`) belong to a single-source forward or peer,
+where there is only one shape to resolve.
+
+`devctl.mine.yaml` can set a different `default` per machine, since which source
+a developer uses day to day is a personal choice. It overlays the `default`
+without restating the modes.
+
+## id
+
+The name this devctl goes by to its siblings. Set it, and devctl publishes its
+allocated ports on a socket in a shared temp directory keyed by the id, so
+another repository's devctl can read them with a [`peer`](#peered-with-a-sibling-devctl)
+dependency. Without an id nothing is published and nothing changes.
+
+```yaml
+id: platform
+```
+
+The socket is `${TMPDIR}/devctl/<id>.sock`, created when devctl starts and
+removed when it quits. Two devctls cannot share one id: the second refuses to
+start rather than fight over the socket, which is how a stray copy is caught. A
+socket left behind by a devctl that did not clean up is taken over.
+
+Ports are allocated once at start and do not move, so what a sibling reads is
+fixed for the run. Start order does not matter: a devctl that peers with a sibling
+not yet running shows `waiting` and picks the sibling up when it appears.
 
 ## tasks
 
@@ -229,8 +306,12 @@ actually got.
 | `{{ service.port }}` | `localhost:<port>` |
 | `{{ service.port.number }}` | `<port>` |
 | `{{ service.port.url }}` | `http://localhost:<port>` |
-| `{{ dependency.address }}` | the value of its `env` variable |
-| `{{ dependency.port }}` | `localhost:<port>` for a forwarded one |
+| `{{ dependency.address }}` | its `env` value, or a dialable address for a multi-mode one |
+| `{{ dependency.port }}` | `localhost:<port>` for a forwarded or peered one |
+
+A multi-mode dependency is referenced only as `{{ name.address }}`: it is the one
+form that resolves whichever mode is live. A single-source forwarded or peered
+dependency uses `{{ name.port }}` and its `.number` and `.url` forms.
 
 A reference to something undeclared is an error at load, so a typo fails before
 anything starts rather than at the moment a service needs the address.
@@ -305,7 +386,10 @@ The load itself rejects:
 - a port outside 1 to 65535, two ports with one name, a `kind` other than
   `http` or `grpc`
 - a `listen` entry for an undeclared port
-- a dependency with neither `env` nor `forward`, one with both, a `port` with no
-  `forward`, or a `kind` other than `mongo` or `tcp`
+- a dependency with none of `env`, `forward` or `peer`, or with more than one; a
+  `port` with no `forward`; a `peer` missing `id`, `service` or `port`; or a
+  `kind` other than `mongo` or `tcp`
+- a dependency with both `modes` and an inline source, a mode without a name, two
+  modes with one name, or a `default` naming no mode
 - `depends_on` naming something that does not exist
 - a reference that does not resolve

@@ -101,6 +101,16 @@ inventory.
   This is the question with the most personal variation, and the answer belongs
   in `devctl.mine.yaml` when it is one developer's arrangement rather than the
   team's.
+- **Does a sibling repository's devctl provide any of these?** If the thing a
+  service needs already runs from its own repository under devctl, give that
+  devctl an `id` and `peer` to it, rather than pasting a port that moves the next
+  time it is allocated. The peered devctl is read live over a socket, so start
+  order does not matter.
+- **Does a dependency have more than one source people switch between?** A local
+  service versus a port-forward to staging is the usual pair. Declare the sources
+  as `modes` with a `default`; `m` in the panel opens a picker to switch. When the
+  everyday default is one developer's choice rather than the team's, set it in
+  `devctl.mine.yaml`, which overlays the `default` without restating the modes.
 - **Does another repository dial any of these by number?** Those ports are
   pinned and everything else is free to move. Getting this wrong either way
   hurts: pinning everything means a run refuses to start over a port nothing
@@ -201,6 +211,13 @@ or `task dev`. That is the whole point of the exercise.
   address.
 - **Secrets.** There are none in this file. Machine-provided addresses come from
   `.env`, which is not committed.
+- **Hard-coding a sibling's port.** If another repository's devctl already runs
+  the thing a service needs, give that devctl an `id` and `peer` to it. A number
+  you paste is wrong the first time that devctl reallocates the port.
+- **A machine-specific default mode in the committed manifest.** Which source a
+  developer points a dependency at day to day is personal. Put that `default` in
+  the committed manifest and it forces one arrangement on everyone; it belongs in
+  `devctl.mine.yaml`.
 
 ## Verify
 

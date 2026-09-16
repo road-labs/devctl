@@ -135,6 +135,37 @@ services:
 		"merging happens as data, so false in the overlay means false")
 }
 
+// A dependency's day-to-day mode is a per-machine choice, so the overlay sets
+// the default without restating the modes the manifest declares.
+func TestOverlayCanChangeAMultiModeDefault(t *testing.T) {
+	manifest := `
+dependencies:
+  - name: platform
+    default: local
+    modes:
+      - name: local
+        peer: {id: platform, service: gateway, port: http}
+      - name: staging
+        port: 7100
+        forward: {cmd: "kubectl port-forward svc/gateway {{ platform.port.number }}:8080"}
+services:
+  - name: ui
+    cmd: npm run dev
+    env:
+      PLATFORM_ADDR: "{{ platform.address }}"
+`
+	path, overlayPath := write(t, manifest, `
+dependencies:
+  - name: platform
+    default: staging
+`)
+	file, err := LoadWithOverlay(path, overlayPath)
+	require.NoError(t, err)
+	assert.Equal(t, "staging", file.Dependencies[0].DefaultMode(),
+		"the machine picks which source it uses day to day")
+	require.Len(t, file.Dependencies[0].Modes, 2, "the modes themselves survive the merge")
+}
+
 func TestOverlayIsValidatedWithTheManifestAndNamedWhenItBreaksIt(t *testing.T) {
 	path, overlayPath := write(t, base, `
 services:

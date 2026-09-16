@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/road-labs/devctl/internal/config"
 	"github.com/road-labs/devctl/internal/deps"
 )
 
@@ -246,6 +247,7 @@ func (m Model) header(width int) string {
 		[2]string{"x", "stop"},
 		[2]string{"r", "restart"},
 		[2]string{"w", "auto-restart on/off"},
+		[2]string{"m", "pick a dependency mode"},
 	)
 	keysRight := keyCol(
 		[2]string{"d", "describe"},
@@ -260,6 +262,7 @@ func (m Model) header(width int) string {
 		styleMuted.Render("○ closed"),
 		styleWarn.Render("*") + styleMuted.Render(" moved from its declared port"),
 		styleMuted.Render("↻ watching for changes"),
+		styleKey.Render("⇄") + styleMuted.Render(" has modes, m to switch"),
 	}
 
 	col := func(lines []string, w int) string {
@@ -298,6 +301,8 @@ func (m Model) View() string {
 		return m.logViewString()
 	case m.describe:
 		return m.describeString()
+	case m.modePick:
+		return m.modePickString()
 	}
 	width := m.width
 	if width <= 0 {
@@ -336,15 +341,17 @@ func (m Model) View() string {
 		switch {
 		case r.dep != nil:
 			things++
-			kind := r.dep.Kind
-			if r.dep.Forwarded() {
-				kind = "forward"
-			}
 			address := deps.Redact(r.address)
 			if address == "" {
 				address = "-"
 			}
-			rows = append(rows, []string{r.cfg.Name, styleMuted.Render(kind), status, address, r.restartCell(), "", styleMuted.Render(r.cfg.Description)})
+			// A multi-mode dependency wears a ⇄ and the mode that is live, so the
+			// panel says both that it can switch and what it is pointed at now. The
+			// glyph is in the key colour, tying it to the m that acts on it.
+			if r.dep.HasModes() {
+				address = styleKey.Render("⇄ ") + styleMuted.Render(r.activeModeName+" · ") + address
+			}
+			rows = append(rows, []string{r.cfg.Name, styleMuted.Render(m.kindOf(r)), status, address, r.restartCell(), "", styleMuted.Render(r.cfg.Description)})
 		case r.task:
 			things++
 			rows = append(rows, []string{r.cfg.Name, styleMuted.Render("task"), status, "", r.restartCell(), "", styleMuted.Render(r.cfg.Description)})
@@ -437,6 +444,62 @@ func (m Model) statusBar(width int) string {
 	}
 	room := width - lipgloss.Width(crumb) - 2
 	return crumb + " " + styleMuted.Render(clip(msg, room))
+}
+
+// modePickString is the mode picker: the dependency's modes with the one live
+// marked and the source each points at. Choosing one switches the dependency and
+// restarts what reads it.
+func (m Model) modePickString() string {
+	r, ok := m.byName[m.modeTarget]
+	if !ok || r.dep == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("switch mode") + styleMuted.Render("  ·  "+r.dep.Name) + "\n")
+	if r.dep.Description != "" {
+		b.WriteString(styleMuted.Render(r.dep.Description) + "\n")
+	}
+	b.WriteString("\n")
+
+	nameW := 0
+	for _, md := range r.dep.Modes {
+		nameW = max(nameW, len(md.Name))
+	}
+	for i, md := range r.dep.Modes {
+		cursor := "  "
+		if i == m.modeCursor {
+			cursor = styleCursor.Render("❯ ")
+		}
+		live := "    "
+		if md.Name == r.activeModeName {
+			live = styleGood.Render("live")
+		}
+		kind, detail := m.modeDetail(md)
+		line := cursor +
+			styleColumn.Render(pad(md.Name, nameW+2)) +
+			pad(live, 6) +
+			styleMuted.Render(pad(kind, 9)) +
+			styleMuted.Render(detail)
+		b.WriteString(clip(line, max(m.width-2, 40)) + "\n")
+	}
+	b.WriteString("\n" + styleMuted.Render("↑↓ move   1-9 jump   enter switch   esc cancel"))
+	return b.String()
+}
+
+// modeDetail names a mode's source kind and what it points at, for the picker.
+func (m Model) modeDetail(md config.Mode) (kind, detail string) {
+	switch {
+	case md.Peered():
+		return "peer", md.Peer.ID + " · " + md.Peer.Service + "." + md.Peer.Port
+	case md.Forwarded():
+		cmd, err := m.expand.Expand(md.Forward.Cmd)
+		if err != nil {
+			cmd = md.Forward.Cmd
+		}
+		return "forward", cmd
+	default:
+		return "env", md.Env
+	}
 }
 
 // logViewString is the full-screen log view: a title with whether the tail is

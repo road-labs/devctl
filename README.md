@@ -92,7 +92,9 @@ tasks:
 
 [`docs/manifest.md`](docs/manifest.md) documents every key.
 [`testdata/devctl.yaml`](testdata/devctl.yaml) is a worked example that the test
-suite loads, so it cannot drift from the format.
+suite loads, so it cannot drift from the format. [`example/`](example) is two
+small projects you can actually run, to see one devctl peer with another and a
+dependency switch between modes.
 
 ## Nobody types an address twice
 
@@ -153,8 +155,61 @@ need it fail.
 
 The command states the local port once, by referring to the port devctl gave it.
 
+**Peered with a sibling devctl.** When you run devctl from several repositories at
+once and some depend on others, a `peer` reads another devctl's live ports rather
+than repeating a number that moves. It names that devctl by its `id` and the
+service and port it declares. The sibling already listens on localhost, so there
+is no tunnel; services reach it as `{{ name.port }}`.
+
+```yaml
+  - name: platform-api
+    description: The platform gateway, read live from the platform repo
+    peer: {id: platform, service: gateway, port: http}
+```
+
+See [Peering devctls together](#peering-devctls-together) for the `id` that makes
+a devctl readable.
+
 Mark a dependency `optional: true` and an unconfigured or unreachable one warns
-rather than stops the run.
+rather than stops the run. Forwarded and peered ones are optional already.
+
+## One dependency, several sources
+
+Running a UI, you often want to point a dependency at a local service one minute
+and a port-forwarded environment the next. A dependency declares those sources as
+named `modes` and switches between them live: select its row, press `m`, and
+pick one. The services that read it restart, so they come back pointed at the new source.
+
+```yaml
+  - name: platform
+    description: The platform API
+    default: local
+    modes:
+      - {name: local,   peer: {id: platform, service: gateway, port: http}}
+      - {name: staging, port: 7100, forward: {cmd: "kubectl -n plat port-forward svc/gateway {{ platform.port.number }}:8080"}}
+      - {name: shared,  env: PLATFORM_URL, example: https://platform.staging}
+```
+
+Each mode is one of the three source kinds. `default` names the one live at
+start; `devctl.mine.yaml` can set a different one per machine, since which source
+a developer uses day to day is their own business. Whatever reads the dependency
+refers to it as `{{ platform.address }}`, which follows whichever mode is live.
+
+## Peering devctls together
+
+Give a devctl an `id` and it publishes its allocated ports for its siblings:
+
+```yaml
+id: platform
+```
+
+Another repository's devctl then reads them by that id with a `peer` dependency,
+so `billing` finds `platform` on whatever port it actually got, with nobody
+writing a number down. The socket lives under the system temp directory and is
+removed when devctl quits. Start order does not matter: a devctl that peers with a
+sibling not yet running shows `waiting`, and picks it up the moment it comes up.
+Two devctls cannot share one id; the second refuses to start, which catches a
+stray copy.
 
 ## Running part of it
 
@@ -227,6 +282,7 @@ mean.
 | `x` | stop |
 | `r` | restart |
 | `w` | auto-restart on or off for this service |
+| `m` | pick a dependency mode (opens a picker) |
 | `d` | describe the selected row |
 | `l` | logs for this row |
 | `L` | logs for everything |

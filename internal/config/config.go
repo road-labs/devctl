@@ -101,16 +101,26 @@ type Service struct {
 	Watch []string `yaml:"watch"`
 }
 
-// Dependency is something outside this repository a run needs. It is either
-// provided by the machine, in which case Env names the variable holding its
-// address (read from the process environment or the repository's .env,
-// referenced as {{ name.address }}) and it is checked when devctl starts; or
-// forwarded by devctl, in which case Port is the local port and Forward the
-// command that opens the tunnel, started from the panel and referenced like
-// a service port: {{ name.port }}, {{ name.port.number }}, {{ name.port.url }}.
-// A forwarded dependency is optional by nature: nothing waits for the tunnel.
-// A machine-provided one is required unless marked optional, in which case
-// unconfigured it expands to "" and unreachable it only warns.
+// Dependency is something outside this repository a run needs. It has one or
+// more sources, which is where its address comes from. A single-source
+// dependency carries the source inline; a dependency with several carries them
+// as named Modes and switches between them live.
+//
+// A source is one of three kinds:
+//
+//   - provided by the machine: Env names the variable holding its address (read
+//     from the process environment or the repository's .env, referenced as
+//     {{ name.address }}) and it is checked when devctl starts;
+//   - forwarded by devctl: Port is the local port and Forward the command that
+//     opens the tunnel, started from the panel and referenced like a service
+//     port: {{ name.port }}, {{ name.port.number }}, {{ name.port.url }};
+//   - peered to a sibling devctl: Peer names another devctl by id and reads one
+//     of its listeners' live ports, referenced the same way as a forward.
+//
+// A forwarded, peered or multi-mode dependency is optional by nature: nothing
+// waits for a tunnel, a sibling, or a mode you can switch away from. A
+// single-source machine-provided one is required unless marked optional, in
+// which case unconfigured it expands to "" and unreachable it only warns.
 type Dependency struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
@@ -121,6 +131,36 @@ type Dependency struct {
 	// Port and Forward describe a dependency devctl tunnels to.
 	Port    int      `yaml:"port"`
 	Forward *Forward `yaml:"forward"`
+	// Peer describes a dependency read from a sibling devctl.
+	Peer *Peer `yaml:"peer"`
+	// Modes are the several sources a dependency can be satisfied by, one active
+	// at a time. Default names the one active at start. A dependency with modes
+	// is referenced only as {{ name.address }}, which resolves to a dialable
+	// address whichever mode is live.
+	Modes   []Mode `yaml:"modes"`
+	Default string `yaml:"default"`
+}
+
+// Mode is one named source of a multi-source dependency: the same three kinds a
+// single-source dependency has, given a name so it can be chosen and switched.
+type Mode struct {
+	Name    string   `yaml:"name"`
+	Env     string   `yaml:"env"`
+	Example string   `yaml:"example"`
+	Kind    string   `yaml:"kind"`
+	Port    int      `yaml:"port"`
+	Forward *Forward `yaml:"forward"`
+	Peer    *Peer    `yaml:"peer"`
+}
+
+// Peer points at one listener of another devctl on this machine, by that
+// devctl's id and the service and port name it declares. devctl reads the
+// sibling's live allocation over its socket, so the number follows whatever the
+// sibling actually got.
+type Peer struct {
+	ID      string `yaml:"id"`
+	Service string `yaml:"service"`
+	Port    string `yaml:"port"`
 }
 
 // Forward is the command that brings a forwarded dependency up, typically a
@@ -130,8 +170,69 @@ type Forward struct {
 	Cmd string `yaml:"cmd"`
 }
 
-// Forwarded reports whether devctl, rather than the machine, provides it.
+// Forwarded reports whether devctl, rather than the machine, provides the
+// single inline source. It is the pre-modes check; multi-mode dependencies ask
+// their active Mode instead.
 func (d Dependency) Forwarded() bool { return d.Forward != nil }
+
+// Peered reports whether the single inline source is read from a sibling devctl.
+func (d Dependency) Peered() bool { return d.Peer != nil }
+
+// HasModes reports whether the dependency carries several named sources rather
+// than one inline. A multi-mode dependency is referenced only as
+// {{ name.address }} and switched with m in the panel.
+func (d Dependency) HasModes() bool { return len(d.Modes) > 0 }
+
+// Modeset is the dependency's sources as a uniform list, so code that does not
+// care whether it was written inline or as modes has one thing to range over. A
+// single-source dependency becomes a list of one, its name empty.
+func (d Dependency) Modeset() []Mode {
+	if len(d.Modes) > 0 {
+		return d.Modes
+	}
+	return []Mode{{Env: d.Env, Example: d.Example, Kind: d.Kind, Port: d.Port, Forward: d.Forward, Peer: d.Peer}}
+}
+
+// DefaultMode names the mode live at start: Default when set, else the first
+// mode, else "" for a single-source dependency.
+func (d Dependency) DefaultMode() string {
+	if d.Default != "" {
+		return d.Default
+	}
+	if len(d.Modes) > 0 {
+		return d.Modes[0].Name
+	}
+	return ""
+}
+
+// Mode returns the named source, falling back to the default and then the
+// first, so a stale selection never leaves a dependency with no source.
+func (d Dependency) Mode(name string) Mode {
+	set := d.Modeset()
+	for _, m := range set {
+		if m.Name == name {
+			return m
+		}
+	}
+	if def := d.Default; def != "" {
+		for _, m := range set {
+			if m.Name == def {
+				return m
+			}
+		}
+	}
+	return set[0]
+}
+
+// Forwarded reports whether this source is a devctl tunnel.
+func (m Mode) Forwarded() bool { return m.Forward != nil }
+
+// Peered reports whether this source is read from a sibling devctl.
+func (m Mode) Peered() bool { return m.Peer != nil }
+
+// PortShaped reports whether the source is referenced by port ({{ name.port }}),
+// which forwards and peers are. An env source is address-shaped instead.
+func (m Mode) PortShaped() bool { return m.Forward != nil || m.Peer != nil }
 
 // Task is a one-shot command offered by the panel, such as seeding the
 // database. It runs to completion and shows its exit status.
@@ -156,6 +257,11 @@ func (s Service) Port(name string) (Port, bool) {
 
 // File is the parsed services.yaml.
 type File struct {
+	// ID names this devctl to its siblings. When set, devctl publishes its
+	// allocated ports on a socket keyed by it, so another repository's devctl can
+	// read them with a peer dependency. Optional: without it nothing is
+	// published and nothing changes.
+	ID string `yaml:"id"`
 	// Logs, when set, keeps a file per service so a crash can be read after the
 	// panel has moved on.
 	Logs *Logs `yaml:"logs"`
@@ -267,27 +373,8 @@ func (f *File) validate() error {
 		if err := claim(d.Name, "dependency"); err != nil {
 			return err
 		}
-		if d.Kind == "" {
-			d.Kind = "tcp"
-		}
-		if d.Kind != "mongo" && d.Kind != "tcp" {
-			return fmt.Errorf("dependency %q has unknown kind %q (mongo or tcp)", d.Name, d.Kind)
-		}
-		switch {
-		case d.Forwarded() && d.Env != "":
-			return fmt.Errorf("dependency %q is either provided by the machine (env) or forwarded (port + forward), not both", d.Name)
-		case d.Forwarded():
-			d.Optional = true
-			if d.Forward.Cmd == "" {
-				return fmt.Errorf("dependency %q forward has no cmd", d.Name)
-			}
-			if d.Port <= 0 || d.Port > 65535 {
-				return fmt.Errorf("dependency %q is forwarded and needs a valid local port, got %d", d.Name, d.Port)
-			}
-		case d.Env == "":
-			return fmt.Errorf("dependency %q needs env (the variable holding its address) or port + forward", d.Name)
-		case d.Port != 0:
-			return fmt.Errorf("dependency %q has a port but no forward", d.Name)
+		if err := f.validateDependency(d); err != nil {
+			return err
 		}
 	}
 
@@ -355,4 +442,95 @@ func (f *File) validate() error {
 	// Last, because it claims names in the same namespace and needs everything
 	// else already claimed.
 	return f.validateProfiles(claim)
+}
+
+// validateDependency checks a dependency's sources, whether written inline or as
+// modes, and fills the defaults each kind carries. A dependency is one inline
+// source or a list of named modes, never both.
+func (f *File) validateDependency(d *Dependency) error {
+	if d.HasModes() {
+		if d.Env != "" || d.Forward != nil || d.Peer != nil || d.Port != 0 {
+			return fmt.Errorf("dependency %q has modes, so its source belongs in a mode, not inline", d.Name)
+		}
+		// A dependency you can switch is optional by nature: a mode you can leave
+		// is not one anything waits for.
+		d.Optional = true
+		names := map[string]bool{}
+		for i := range d.Modes {
+			m := &d.Modes[i]
+			if m.Name == "" {
+				return fmt.Errorf("dependency %q has a mode without a name", d.Name)
+			}
+			if names[m.Name] {
+				return fmt.Errorf("dependency %q declares mode %q twice", d.Name, m.Name)
+			}
+			names[m.Name] = true
+			if err := validateMode(d.Name, m); err != nil {
+				return err
+			}
+		}
+		if d.Default != "" && !names[d.Default] {
+			return fmt.Errorf("dependency %q default %q is not one of its modes", d.Name, d.Default)
+		}
+		return nil
+	}
+
+	inline := &Mode{Env: d.Env, Example: d.Example, Kind: d.Kind, Port: d.Port, Forward: d.Forward, Peer: d.Peer}
+	if err := validateMode(d.Name, inline); err != nil {
+		return err
+	}
+	d.Kind = inline.Kind
+	if inline.PortShaped() {
+		d.Optional = true
+	}
+	return nil
+}
+
+// validateMode is the single definition of what one source is, shared by inline
+// dependencies and modes: exactly one of env, forward or peer, each with what it
+// needs. It fills the kind default of a machine-provided source.
+func validateMode(dep string, m *Mode) error {
+	sources := 0
+	for _, has := range []bool{m.Env != "", m.Forward != nil, m.Peer != nil} {
+		if has {
+			sources++
+		}
+	}
+	where := "dependency " + strconv.Quote(dep)
+	if m.Name != "" {
+		where += " mode " + strconv.Quote(m.Name)
+	}
+	switch {
+	case sources == 0:
+		return fmt.Errorf("%s needs one of env, forward or peer", where)
+	case sources > 1:
+		return fmt.Errorf("%s is provided one way: env, forward or peer, not several", where)
+	}
+	switch {
+	case m.Forward != nil:
+		if m.Forward.Cmd == "" {
+			return fmt.Errorf("%s forward has no cmd", where)
+		}
+		if m.Port <= 0 || m.Port > 65535 {
+			return fmt.Errorf("%s is forwarded and needs a valid local port, got %d", where, m.Port)
+		}
+	case m.Peer != nil:
+		if m.Peer.ID == "" || m.Peer.Service == "" || m.Peer.Port == "" {
+			return fmt.Errorf("%s peer needs id, service and port", where)
+		}
+		if m.Port != 0 {
+			return fmt.Errorf("%s is peered, so its port comes from the sibling, not a local one", where)
+		}
+	default: // machine-provided
+		if m.Kind == "" {
+			m.Kind = "tcp"
+		}
+		if m.Kind != "mongo" && m.Kind != "tcp" {
+			return fmt.Errorf("%s has unknown kind %q (mongo or tcp)", where, m.Kind)
+		}
+		if m.Port != 0 {
+			return fmt.Errorf("%s has a port but no forward", where)
+		}
+	}
+	return nil
 }

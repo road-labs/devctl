@@ -34,6 +34,39 @@ type Expander struct {
 // ForwardPort is the port name a forwarded dependency's local port goes by.
 const ForwardPort = "port"
 
+// forwardPort is the local port a dependency needs reserved for a forward
+// source, and whether it has one. A single forward uses its own port; a
+// multi-mode dependency uses its default forward mode, else its first, since
+// its forward modes share the one local port. A slot is reserved even when a
+// forward is not the mode live at start, so switching to it later has a port
+// ready. Peer and machine-provided sources reserve nothing.
+func forwardPort(dep config.Dependency) (int, bool) {
+	if !dep.HasModes() {
+		if dep.Forwarded() {
+			return dep.Port, true
+		}
+		return 0, false
+	}
+	def := dep.DefaultMode()
+	var first *config.Mode
+	for i := range dep.Modes {
+		m := &dep.Modes[i]
+		if m.Forward == nil {
+			continue
+		}
+		if first == nil {
+			first = m
+		}
+		if m.Name == def {
+			return m.Port, true
+		}
+	}
+	if first != nil {
+		return first.Port, true
+	}
+	return 0, false
+}
+
 // Allocate decides the port for every declared name, services' listeners and
 // forwarded dependencies' local ports alike. A free default is kept; a default
 // something else holds is replaced by a free port unless that port is fixed,
@@ -45,13 +78,14 @@ func Allocate(file *config.File, free func(port int) bool, pick func() (int, err
 	taken := map[int]string{}
 
 	for _, dep := range file.Dependencies {
-		if !dep.Forwarded() {
+		declared, ok := forwardPort(dep)
+		if !ok {
 			continue
 		}
-		if owner, dup := taken[dep.Port]; dup {
-			return nil, nil, fmt.Errorf("%s.%s and %s both declare port %d", dep.Name, ForwardPort, owner, dep.Port)
+		if owner, dup := taken[declared]; dup {
+			return nil, nil, fmt.Errorf("%s.%s and %s both declare port %d", dep.Name, ForwardPort, owner, declared)
 		}
-		port := dep.Port
+		port := declared
 		if !free(port) {
 			alt, err := pick()
 			if err != nil {
@@ -225,9 +259,14 @@ func Validate(file *config.File) error {
 		}
 	}
 	for _, dep := range file.Dependencies {
-		if dep.Forwarded() {
+		switch {
+		case dep.HasModes():
+			// A multi-mode dependency is referenced only as {{ name.address }},
+			// which resolves to a dialable address whichever mode is live.
+			declared.Values[dep.Name+".address"] = "placeholder"
+		case dep.Forwarded() || dep.Peered():
 			declared.Ports[dep.Name] = map[string]int{ForwardPort: 1}
-		} else {
+		default:
 			declared.Values[dep.Name+".address"] = "placeholder"
 		}
 	}
@@ -249,10 +288,23 @@ func Validate(file *config.File) error {
 			return err
 		}
 	}
+	// Forward commands are checked against a table that also carries each
+	// dependency's own local port, so a forward may state its port by referring
+	// to itself even on a multi-mode dependency, where consumers may not.
+	withForwards := Expander{Ports: Table{}, Values: declared.Values}
+	for name, p := range declared.Ports {
+		withForwards.Ports[name] = p
+	}
 	for _, dep := range file.Dependencies {
-		if dep.Forwarded() {
-			if err := check("dependency "+dep.Name+" forward", dep.Forward.Cmd); err != nil {
-				return err
+		withForwards.Ports[dep.Name] = map[string]int{ForwardPort: 1}
+	}
+	for _, dep := range file.Dependencies {
+		for _, m := range dep.Modeset() {
+			if m.Forward == nil {
+				continue
+			}
+			if _, err := withForwards.Expand(m.Forward.Cmd); err != nil {
+				return fmt.Errorf("dependency %s forward: %w", dep.Name, err)
 			}
 		}
 	}

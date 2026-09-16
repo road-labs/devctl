@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/road-labs/devctl/internal/deps"
+	"github.com/road-labs/devctl/internal/peer"
 	"github.com/road-labs/devctl/internal/ports"
 )
 
@@ -32,7 +33,10 @@ func (m Model) describeBody() string {
 	switch {
 	case r.dep != nil:
 		kind = "dependency"
-		if r.dep.Forwarded() {
+		switch mode := r.mode(); {
+		case mode.Peered():
+			kind = "dependency, peered"
+		case mode.Forwarded():
 			kind = "dependency, forwarded"
 		}
 	case r.task:
@@ -60,9 +64,39 @@ func (m Model) describeBody() string {
 		field("starts", fmt.Sprintf("%d, %d of them restarts", r.starts, r.restarts()))
 	}
 	if r.dep != nil {
-		field("env", r.dep.Env)
+		mode := r.mode()
+		if r.dep.HasModes() {
+			labels := make([]string, 0, len(r.dep.Modes))
+			for _, md := range r.dep.Modes {
+				label := md.Name
+				if md.Name == r.activeModeName {
+					label = "[" + label + "]"
+				}
+				labels = append(labels, label)
+			}
+			field("mode", r.activeModeName+styleMuted.Render("  (m picks)"))
+			field("modes", strings.Join(labels, "  "))
+		}
+		field("env", mode.Env)
 		field("address", deps.Redact(r.address))
-		field("probe", r.dep.Kind)
+		if mode.Peered() {
+			// Say where this port comes from: not a tunnel or a variable, but read
+			// live from a sibling devctl over its socket. When the sibling is not
+			// running there is no address yet, so the reader knows to start it.
+			field("peer", mode.Peer.ID+"  "+mode.Peer.Service+"."+mode.Peer.Port)
+			read := "read over its socket"
+			if r.address == "" {
+				read = "waiting: run the " + mode.Peer.ID + " devctl"
+			}
+			field("socket", tilde(peer.SocketPath(mode.Peer.ID))+styleMuted.Render("  ("+read+")"))
+		}
+		if mode.Env != "" {
+			probe := mode.Kind
+			if probe == "" {
+				probe = "tcp"
+			}
+			field("probe", probe)
+		}
 		if r.dep.Optional {
 			field("optional", "yes, an unreachable one only warns")
 		}
@@ -75,12 +109,14 @@ func (m Model) describeBody() string {
 		}
 		field("command", cmd)
 	}
-	if r.dep != nil && r.dep.Forwarded() {
-		forward, err := m.expand.Expand(r.dep.Forward.Cmd)
-		if err != nil {
-			forward = r.dep.Forward.Cmd
+	if r.dep != nil {
+		if mode := r.mode(); mode.Forwarded() {
+			forward, err := m.expand.Expand(mode.Forward.Cmd)
+			if err != nil {
+				forward = mode.Forward.Cmd
+			}
+			field("forward", forward)
 		}
-		field("forward", forward)
 	}
 	if len(r.cfg.Watch) > 0 {
 		state := "on"
@@ -224,13 +260,22 @@ func (m Model) dependents(r *row) string {
 	return b.String()
 }
 
-// kindOf names a row the way the table's TYPE column does.
+// kindOf names a row the way the table's TYPE column does. A dependency reads
+// as its active mode, so a switch shows here too.
 func (m Model) kindOf(r *row) string {
 	switch {
-	case r.dep != nil && r.dep.Forwarded():
-		return "forward"
 	case r.dep != nil:
-		return r.dep.Kind
+		mode := r.mode()
+		switch {
+		case mode.Peered():
+			return "peer"
+		case mode.Forwarded():
+			return "forward"
+		case mode.Kind != "":
+			return mode.Kind
+		default:
+			return "tcp"
+		}
 	case r.task:
 		return "task"
 	}

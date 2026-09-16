@@ -1,0 +1,24 @@
+# The platform project. It runs an API on a dynamic port and publishes that port
+# to its siblings under id: platform, so the billing project next door can reach
+# it without anyone writing the number down.
+id: platform
+
+services:
+  # An HTTP service. devctl allocates its port at start and hands it in through
+  # HTTP_ADDR; the api binds whatever it is given. A sibling that peers with
+  # id: platform reads this same number.
+  - name: api
+    description: The platform API other repositories read
+    ports:
+      - {name: http, port: 8100, kind: http}
+    listen: {http: HTTP_ADDR}
+    autostart: true
+    watch: [cmd/api]
+    cmd: go run ./cmd/api
+
+  # A worker is a perfectly good service with no ports at all.
+  - name: worker
+    description: A background worker with nothing to listen on
+    autostart: true
+    watch: [cmd/worker]
+    cmd: go run ./cmd/worker

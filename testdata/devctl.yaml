@@ -1,11 +1,18 @@
 # A worked example of every feature a devctl.yaml has: dependencies the machine
-# provides, dependencies devctl forwards, services with several listeners,
-# pinned ports, watched directories and one-shot tasks. `devctl -example` prints
-# this file.
+# provides, dependencies devctl forwards, a dependency with several sources it
+# switches between (one of them a peer of a sibling devctl), an id so siblings
+# can peer back, services with several listeners, pinned ports, watched
+# directories and one-shot tasks. `devctl -example` prints this file.
 #
 # It is also the manifest devctl's own tests run against, so it cannot rot. It
 # describes an imaginary shop rather than any real repository, so the tests
 # assert on something stable and the example stays readable to everyone.
+
+# This devctl's name to its siblings. With it set, devctl publishes its
+# allocated ports on a socket, so another repository's devctl can read them with
+# a peer dependency (see `inventory` below, which peers the other way, to a
+# devctl called warehouse). Without an id nothing is published.
+id: shop
 
 x-shared:
   # A value two places need. YAML anchors keep it stated once.
@@ -45,13 +52,31 @@ dependencies:
     port: 7100
     forward: {cmd: "kubectl -n shop port-forward svc/payments {{ payments.port.number }}:8080"}
 
+  # Several sources, switched live with m. "local" reads the stock service's
+  # port from a sibling devctl, the one that runs with id: warehouse in the
+  # warehouse repository; "staging" opens a port-forward instead. A consumer
+  # refers to it as {{ inventory.address }}, which resolves to a dialable address
+  # whichever mode is live. A dependency you can switch is optional: nothing
+  # waits for a mode you can leave, and an absent sibling only shows as waiting.
+  # (A peer can also be a dependency's only source, written inline like a
+  # forward: peer: {id: ..., service: ..., port: ...}.)
+  - name: inventory
+    description: Stock levels, local from the warehouse devctl or forwarded from staging
+    default: local
+    modes:
+      - name: local
+        peer: {id: warehouse, service: stock, port: grpc}
+      - name: staging
+        port: 7110
+        forward: {cmd: "kubectl -n shop port-forward svc/stock {{ inventory.port.number }}:8080"}
+
 services:
   # Several listeners, one of them pinned. Anything reached by number from
   # outside this repository has to be pinned; the rest may move when something
   # else on the machine holds the default.
   - name: catalogue
     description: Product catalogue, the API everything else reads
-    depends_on: [db]
+    depends_on: [db, inventory]
     ports:
       - {name: http, port: 7200, kind: http, fixed: true, description: public API, its URL is written down elsewhere}
       - {name: grpc, port: 7201, kind: grpc, description: internal API, resolved through the port table}
@@ -64,6 +89,7 @@ services:
     env:
       DATABASE_URL: "{{ db.address }}"
       PAYMENTS_ADDR: "{{ payments.port }}"
+      INVENTORY_ADDR: "{{ inventory.address }}"
       API_KEY: *api_key
 
   # One listener, and a program that wants a bare port number rather than an

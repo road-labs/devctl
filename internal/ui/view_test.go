@@ -42,7 +42,7 @@ func TestViewFitsItsWidth(t *testing.T) {
 func TestViewDrawsAClosedPanel(t *testing.T) {
 	out := model(t, 140, 50).View()
 	require.Equal(t, strings.Count(out, "╭"), strings.Count(out, "╰"), "one bottom rule per top rule")
-	require.Contains(t, out, "shop[6]", "the title counts the things, not the listeners under them")
+	require.Contains(t, out, "shop[7]", "the title counts the things, not the listeners under them")
 }
 
 // One table holds all three kinds, and the TYPE column is what tells them apart
@@ -62,7 +62,7 @@ func TestGroupsAreSeparatedAndNavigable(t *testing.T) {
 	m := model(t, 140, 50)
 	require.Contains(t, m.View(), strings.Repeat("─", 20), "a rule between the bands")
 
-	// The fixture is two dependencies, three services, one task, in that order.
+	// The fixture is three dependencies, three services, one task, in that order.
 	require.Equal(t, 0, m.rows[m.cursor].group(), "the cursor starts on a dependency")
 	m.cursor = m.nextGroup(1)
 	require.Equal(t, 1, m.rows[m.cursor].group(), "down to the services")
