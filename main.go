@@ -418,8 +418,10 @@ func printTargets(manifest string) {
 	if err != nil {
 		return
 	}
-	for _, name := range file.Targets() {
-		fmt.Println(name)
+	// One target per line as "name<TAB>kind": the shells split on the tab, using
+	// the name to match and the kind as the description shown beside it.
+	for _, t := range file.Targets() {
+		fmt.Printf("%s\t%s\n", t.Name, t.Kind)
 	}
 }
 
@@ -447,7 +449,8 @@ _devctl() {
 		COMPREPLY=($(compgen -W "-manifest -check -example -skill -completion -complete" -- "$cur"))
 		return
 	fi
-	COMPREPLY=($(compgen -W "$(devctl -complete 2>/dev/null)" -- "$cur"))
+	# bash shows no per-item description, so just the names (first tab field).
+	COMPREPLY=($(compgen -W "$(devctl -complete 2>/dev/null | cut -f1)" -- "$cur"))
 }
 complete -F _devctl devctl
 `
@@ -455,8 +458,9 @@ complete -F _devctl devctl
 const zshCompletion = `#compdef devctl
 # devctl zsh completion. Load it with:  source <(devctl -completion zsh)
 _devctl() {
+	# "name<TAB>kind" becomes "name:kind", which _describe shows as name -- kind.
 	local -a targets
-	targets=(${(f)"$(devctl -complete 2>/dev/null)"})
+	targets=(${(f)"$(devctl -complete 2>/dev/null | sed 's/\t/:/')"})
 	_describe -t targets 'run target' targets
 }
 compdef _devctl devctl
@@ -464,7 +468,8 @@ compdef _devctl devctl
 
 const fishCompletion = `# devctl fish completion. Install it with:
 #   devctl -completion fish > ~/.config/fish/completions/devctl.fish
-complete -c devctl -f -a "(devctl -complete 2>/dev/null)" -d target
+# devctl -complete prints "name<TAB>kind"; fish reads the tab as the description.
+complete -c devctl -f -a "(devctl -complete 2>/dev/null)"
 complete -c devctl -f -l manifest -d "path to devctl.yaml"
 complete -c devctl -f -l check -d "validate and print the plan"
 complete -c devctl -f -l example -d "print a worked example manifest"

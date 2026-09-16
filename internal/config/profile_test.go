@@ -109,11 +109,17 @@ func TestSelectProfileSetsDependencyMode(t *testing.T) {
 // Targets is what shell completion offers: profiles and every single service,
 // task and dependency, so `devctl <TAB>` lists them all.
 func TestTargets(t *testing.T) {
-	got := fixture(t).Targets()
-	for _, want := range []string{"storefront-only", "storefront-staging", "catalogue", "db", "inventory", "seed"} {
-		assert.Contains(t, got, want)
+	kind := map[string]string{}
+	var names []string
+	for _, tg := range fixture(t).Targets() {
+		kind[tg.Name] = tg.Kind
+		names = append(names, tg.Name)
 	}
-	assert.IsIncreasing(t, got, "sorted, so completion lists them in order")
+	assert.Equal(t, "profile", kind["storefront-only"])
+	assert.Equal(t, "service", kind["catalogue"])
+	assert.Equal(t, "dependency", kind["db"])
+	assert.Equal(t, "task", kind["seed"])
+	assert.IsIncreasing(t, names, "sorted, so completion lists them in order")
 }
 
 // A profile carries run-level env, applied to the run's services over their own.

@@ -151,23 +151,27 @@ func withRunEnv(own, run map[string]string) map[string]string {
 	return merged
 }
 
+// Target is one thing `devctl <name>` accepts, with what kind it is so shell
+// completion can label it.
+type Target struct{ Name, Kind string }
+
 // Targets is everything `devctl <name>` accepts: the profiles, and every single
 // service, task and dependency. Shell completion lists these.
-func (f *File) Targets() []string {
-	var out []string
+func (f *File) Targets() []Target {
+	var out []Target
 	for _, p := range f.Profiles {
-		out = append(out, p.Name)
+		out = append(out, Target{p.Name, "profile"})
 	}
 	for _, d := range f.Dependencies {
-		out = append(out, d.Name)
+		out = append(out, Target{d.Name, "dependency"})
 	}
 	for _, s := range f.Services {
-		out = append(out, s.Name)
+		out = append(out, Target{s.Name, "service"})
 	}
 	for _, t := range f.Tasks {
-		out = append(out, t.Name)
+		out = append(out, Target{t.Name, "task"})
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
