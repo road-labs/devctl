@@ -374,7 +374,9 @@ that does not resolve is exactly why the row will not start.
 `l` opens the selected row's output, `L` every process merged in arrival order
 with each line prefixed by its service. `←` `→` or `tab` move between them, `g`
 and `G` jump to the ends, `f` follows the tail, which also stops when you scroll
-up and resumes when you reach the bottom. `esc` returns.
+up and resumes when you reach the bottom. A line wider than the terminal is cut
+at its edge; `w` wraps it instead, and stays on until pressed again. `esc`
+returns.
 
 That is the last 2000 lines of each process, kept in memory and gone when devctl
 is. To keep them, give the manifest a log directory:
