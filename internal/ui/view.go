@@ -503,8 +503,8 @@ func (m Model) modeDetail(md config.Mode) (kind, detail string) {
 }
 
 // logViewString is the full-screen log view: a title with whether the tail is
-// being followed, a tab bar of sources with the current one highlighted, the
-// scrollable content, and the keys.
+// being followed and whether long lines wrap, a tab bar of sources with the
+// current one highlighted, the scrollable content, and the keys.
 func (m Model) logViewString() string {
 	state := "following"
 	if !m.follow {
@@ -524,6 +524,9 @@ func (m Model) logViewString() string {
 	}
 	var b strings.Builder
 	head := styleTitle.Render("logs") + styleMuted.Render("  ·  "+state)
+	if m.wrap {
+		head += styleMuted.Render("  ·  wrapped")
+	}
 	// The file behind the tail, when there is one: what is on screen is the last
 	// 2000 lines, and the answer to "where is the rest" should not need asking.
 	if r, ok := m.byName[m.logFilter]; ok {
@@ -534,6 +537,6 @@ func (m Model) logViewString() string {
 	b.WriteString(head + "\n")
 	b.WriteString(strings.Join(tabs, " ") + "\n")
 	b.WriteString(m.viewport.View() + "\n")
-	b.WriteString(styleMuted.Render("←/→ or tab service  f follow  ↑↓ pgup pgdn scroll  g/G top/bottom  esc or L back  q quit"))
+	b.WriteString(styleMuted.Render("←/→ or tab service  f follow  w wrap  ↑↓ pgup pgdn scroll  g/G top/bottom  esc or L back  q quit"))
 	return b.String()
 }

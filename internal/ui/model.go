@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/road-labs/devctl/internal/config"
 	"github.com/road-labs/devctl/internal/deps"
@@ -90,11 +91,13 @@ type Model struct {
 
 	// The full-screen log view: every process's output merged in the order
 	// it arrived, or one process's, scrollable, following the tail until
-	// scrolled away from it.
+	// scrolled away from it. Lines wider than the terminal are cut at its
+	// edge until wrap folds them; that is kept for the session, not per row.
 	logView   bool
 	describe  bool
 	logFilter string // row name, or "" for every row
 	follow    bool
+	wrap      bool
 	viewport  viewport.Model
 
 	// The mode picker: open on a multi-mode dependency, modeTarget names it and
@@ -608,6 +611,11 @@ func (m Model) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	case "w":
+		// Fold long lines at the right edge rather than losing what is past it.
+		m.wrap = !m.wrap
+		m.refreshLogs()
+		return m, nil
 	case "g", "home":
 		m.follow = false
 		m.viewport.GotoTop()
@@ -672,18 +680,46 @@ func (m *Model) refreshLogs() {
 	}
 	sort.Slice(lines, func(i, j int) bool { return lines[i].seq < lines[j].seq })
 
+	// The merged view prefixes every line with its name; a wrapped line's
+	// continuations are indented past that column so the text stays in one.
+	indent := 0
+	if m.logFilter == "" {
+		indent = nameW + 1
+	}
 	var b strings.Builder
 	for _, l := range lines {
 		if m.logFilter == "" {
 			b.WriteString(styleMuted.Render(fmt.Sprintf("%-*s ", nameW, l.name)))
 		}
-		b.WriteString(l.text)
+		text := l.text
+		if m.wrap {
+			text = wrapLine(text, m.viewport.Width, indent)
+		}
+		b.WriteString(text)
 		b.WriteString("\n")
 	}
 	m.viewport.SetContent(b.String())
 	if m.follow {
 		m.viewport.GotoBottom()
 	}
+}
+
+// wrapLine folds text so that, after indent columns of prefix, it fits in
+// width columns: at a space where there is one, mid-word where there is not,
+// with escape codes kept intact. Each continuation is indented to sit under
+// the first line's text. A terminal too narrow to fold into gets the line as
+// it came, and the viewport cuts it as before.
+func wrapLine(text string, width, indent int) string {
+	const minCols = 10
+	room := width - indent
+	if room < minCols {
+		return text
+	}
+	wrapped := ansi.Wrap(text, room, "")
+	if indent == 0 {
+		return wrapped
+	}
+	return strings.ReplaceAll(wrapped, "\n", "\n"+strings.Repeat(" ", indent))
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
